@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Downloaded AIS and environmental caches
+ais_weather_cache/
+*.csv.zst
+*.csv.gz
+
+# Generated pipeline and random-run outputs
+random_ais_test_*/
+potential_near_miss_events.csv
+events_with_weather.csv
+weather_hourly.csv
+environment_observations.csv
+environment_sources.json
+summary.json
+
+# Local virtual environments and tooling
+.venv/
+venv/
+.env
+
+# Separate nested project repository
+Independent-Study/
+
