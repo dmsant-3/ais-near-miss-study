@@ -10,6 +10,8 @@ ais_weather_cache/
 
 # Generated pipeline and random-run outputs
 random_ais_test_*/
+AIS_*_Results/
+AIS_*_Preview.csv
 potential_near_miss_events.csv
 events_with_weather.csv
 weather_hourly.csv

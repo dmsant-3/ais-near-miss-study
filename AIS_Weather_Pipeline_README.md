@@ -108,6 +108,22 @@ Results are written to `ais_weather_results` by default:
 
 `minimum_flagged_separation_m` is the smallest separation at qualifying grid timestamps; it is not exact hull clearance or the minimum over the complete surrounding encounter. `minimum_dcpa_m` is a prediction under constant motion. Review tracks and local operating context before describing an event as hazardous.
 
+## Reviewing and classifying candidates
+
+`confirm_near_misses.py` adds synchronized track evidence to each screened event. It calculates the closest observed antenna-position separation in a window around the event and looks for a course change or speed reduction in either vessel. The default rule uses a 0.1 nautical mile close-pass distance floor, a 15-degree course change, or a speed drop of at least 2 knots and 25 percent. These are configurable screening values, not a universal maritime safety definition.
+
+Example:
+
+```powershell
+python confirm_near_misses.py `
+  --ais-file "ais_weather_cache\ais\ais-2016-10-19.csv.zst" `
+  --events "AIS_2016-10-19_NY_Results\events_with_weather.csv" `
+  --bbox -74.3 40.4 -73.7 40.9 `
+  --output "AIS_2016-10-19_NY_Results\near_miss_evidence_review.csv"
+```
+
+The output labels events `rule_supported_candidate`, `close_pass_no_maneuver_evidence`, `no_close_pass_in_review_window`, or `insufficient_track_coverage`. It includes the measurements behind the label and blank human-review fields. A `rule_supported_candidate` is not automatically a confirmed near miss: an analyst must inspect the synchronized tracks, local operating context, vessel roles, and possible data artifacts, then enter a review label and notes. AIS alone cannot provide ground-truth confirmation.
+
 The hourly weather table includes periods with no flagged events, but the pipeline does not yet calculate vessel-hours or statistical weather-risk associations. Exposure calculations remain necessary before comparing rates under different weather conditions.
 
 ## Options and repeat runs
