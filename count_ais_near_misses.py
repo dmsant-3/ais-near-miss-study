@@ -40,7 +40,10 @@ KNOT = 1852 / 3600
 NODE_READER = """const fs=require('node:fs'),z=require('node:zlib');
 const f=fs.createReadStream(process.argv[1]),d=z.createZstdDecompress();
 for(const s of [f,d])s.on('error',e=>{console.error(e.message);process.exit(1)});
-process.stdout.on('error',()=>process.exit(1));f.pipe(d).pipe(process.stdout);"""
+// A caller may intentionally stop after a sample. Treat that closed pipe as
+// normal, while still surfacing source-file and decompressor errors.
+process.stdout.on('error',e=>process.exit(e.code==='EPIPE'?0:1));
+f.pipe(d).pipe(process.stdout);"""
 
 
 def log(message):
