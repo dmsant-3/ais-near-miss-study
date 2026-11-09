@@ -230,6 +230,11 @@ def write_csv_atomic(path: Path, fields: list[str], rows: list[dict]) -> None:
     publish_report(temp, path)
 
 
+def log_progress(report_dir: Path, message: str) -> None:
+    with (report_dir / 'progress.log').open('a', encoding='utf-8') as stream:
+        stream.write(f'{datetime.now(timezone.utc).isoformat()} {message}\n')
+
+
 def rebuild_reports(report_dir: Path) -> None:
     """Regenerate aggregate reports from committed per-day results."""
     all_candidates: list[dict] = []
@@ -325,6 +330,10 @@ border-bottom:1px solid #476278}} small{{color:#b9cfdf}}
 <table><thead><tr><th>Port replay</th><th>Screened encounters</th>
 <th>Review candidates</th></tr></thead><tbody>{''.join(table_rows)}</tbody></table>
 <p><a href="daily_summary.csv">Full daily summary</a></p>
+<h2>Run log</h2>
+<p><a href="progress.log">Open full progress log</a></p>
+<iframe title="AIS run log" src="progress.log"
+style="width:100%;height:320px;background:white;border:0"></iframe>
 <small>Generated {escape(totals['generated_utc'])}. Refreshes every minute.
 Counts come from completed daily reports.</small></html>
 """, encoding='utf-8')
@@ -381,9 +390,12 @@ def main(argv: list[str] | None = None) -> int:
         publish_report(config_temp, config_path)
 
     index_cache = args.work_dir / "api_state" if args.cron else None
+    log_progress(args.report_dir, f'Run started for {args.start_date} through {args.end_date}')
     try:
         links = available_days(args.start_date, args.end_date, index_cache)
-    except ais_request_policy.DeferredRequest as exc:
+    except (ais_request_policy.DeferredRequest, OSError, ValueError) as exc:
+        log_progress(args.report_dir, f'FAILED during NOAA index lookup: {type(exc).__name__}: {exc}')
+        rebuild_reports(args.report_dir)
         print(exc, file=sys.stderr, flush=True)
         return 1
     daily_root = args.report_dir / 'daily'
@@ -403,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     failures = 0
     for index, (day, url) in enumerate(pending, 1):
         day_target = daily_root / day.isoformat()
+        log_progress(args.report_dir, f'{day} processing started')
         print(f'[{index}/{len(pending)}] Processing {day.isoformat()}', flush=True)
         try:
             with tempfile.TemporaryDirectory(prefix=f'ais_{day.isoformat()}_', dir=args.work_dir) as temp_name:
@@ -411,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                 def adjacent(other_day):
                     other_url = links.get(other_day)
                     if not other_url:
+                        log_progress(args.report_dir, f'{day} warning: adjacent AIS unavailable for {other_day}')
                         other_url = available_days(other_day, other_day, index_cache).get(other_day)
                     if not other_url:
                         print(f'Adjacent AIS unavailable for {other_day}', flush=True)
@@ -418,9 +432,11 @@ def main(argv: list[str] | None = None) -> int:
                     target = temp / f'ais-{other_day}.csv.zst'
                     if not target.exists():
                         download(other_url, target)
+                        log_progress(args.report_dir, f'{day} downloaded adjacent AIS for {other_day}')
                     return target
 
                 provenance = download(url, ais)
+                log_progress(args.report_dir, f'{day} downloaded AIS ({provenance["compressed_bytes"]:,} bytes)')
                 print(f"  Downloaded {provenance['compressed_bytes']:,} bytes; screening three ports.", flush=True)
                 with tempfile.TemporaryDirectory(prefix=f'.{day.isoformat()}_staging_', dir=daily_root) as stage_name:
                     stage = Path(stage_name)
@@ -429,6 +445,12 @@ def main(argv: list[str] | None = None) -> int:
                         print(f'  {port}:', flush=True)
                         result = analyze_port(day, port, bbox, ais, stage, args.node, adjacent)
                         port_results.append(result)
+                        source_report = stage / port / 'environment_sources.json'
+                        if source_report.exists():
+                            environment = json.loads(source_report.read_text(encoding='utf-8'))
+                            for error in environment.get('errors', []):
+                                log_progress(args.report_dir, f'{day} {port} environmental warning: {error}')
+                        log_progress(args.report_dir, f'{day} {port} processing completed')
                     (stage / 'summary.json').write_text(json.dumps({
                         'date': day.isoformat(), 'source': provenance,
                         'file_deleted_after_processing': True, 'ports': port_results,
@@ -444,16 +466,19 @@ def main(argv: list[str] | None = None) -> int:
                         shutil.copytree(stage, day_target)
             # The TemporaryDirectory scope above removes the compressed AIS file.
             rebuild_reports(args.report_dir)
+            log_progress(args.report_dir, f'{day} SUCCESS: reports published and temporary AIS cleaned up')
             likely = sum(r['likely_for_human_review'] for r in port_results)
             events = sum(r['potential_events'] for r in port_results)
             print(f'  Done: {events} potential events; {likely} likely-labels for review. '
                   'Daily AIS file deleted.', flush=True)
         except KeyboardInterrupt:
+            log_progress(args.report_dir, f'{day} interrupted')
             print('\nInterrupted. Current day will be retried on the next run.', file=sys.stderr)
             rebuild_reports(args.report_dir)
             return 130
         except Exception as exc:
             failures += 1
+            log_progress(args.report_dir, f'{day} FAILED: {type(exc).__name__}: {exc}')
             print(f'  FAILED {day.isoformat()}: {type(exc).__name__}: {exc}', file=sys.stderr, flush=True)
             if args.cron:
                 break
@@ -461,6 +486,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f'Waiting {args.pause_seconds} seconds before the next day.', flush=True)
             time.sleep(args.pause_seconds)
     rebuild_reports(args.report_dir)
+    status = 'FAILED' if failures else 'SUCCESS' if pending else 'NO WORK'
+    log_progress(args.report_dir, f'Run finished: {status}; failed days: {failures}')
     print(f"Finished this run. Failures: {failures}. Reports: {args.report_dir}", flush=True)
     return 1 if failures else 0
 
