@@ -13,6 +13,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+from html import escape
 import ais_request_policy
 import csv
 from datetime import date, datetime, timedelta, timezone
@@ -291,6 +292,43 @@ def rebuild_reports(report_dir: Path) -> None:
     temp = report_dir / 'report_summary.json.part'
     temp.write_text(json.dumps(totals, indent=2) + '\n', encoding='utf-8')
     publish_report(temp, report_dir / 'report_summary.json')
+    latest = max((row['date'] for row in daily), default=None)
+    table_rows = []
+    for row in daily:
+        if row['date'] != latest:
+            continue
+        port = escape(row['port'])
+        replay = f"daily/{escape(latest)}/{port}/event_dashboard.html"
+        table_rows.append(
+            f'<tr><td><a href="{replay}">{port.replace("_", " ")}</a></td>'
+            f'<td>{int(row["potential_events"]):,}</td>'
+            f'<td>{int(row["likely_for_human_review"]):,}</td></tr>'
+        )
+    progress = report_dir / 'progress.html'
+    temp = progress.with_suffix('.html.part')
+    temp.write_text(f"""<!doctype html>
+<html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>AIS processing progress</title>
+<style>
+body{{font:16px/1.6 system-ui;margin:40px auto;padding:0 20px;max-width:900px;
+background:#102437;color:#eef7ff}} a{{color:#8de9db}}
+table{{border-collapse:collapse;width:100%}}th,td{{padding:10px;text-align:left;
+border-bottom:1px solid #476278}} small{{color:#b9cfdf}}
+</style>
+<h1>AIS processing progress</h1>
+<p><strong>{totals['completed_day_count']:,}</strong> completed days ·
+<strong>{totals['total_potential_events']:,}</strong> screened encounters ·
+<strong>{totals['total_likely_for_human_review']:,}</strong> review candidates</p>
+<h2>Latest completed AIS date</h2><p>{escape(latest or 'No completed days yet')}</p>
+<table><thead><tr><th>Port replay</th><th>Screened encounters</th>
+<th>Review candidates</th></tr></thead><tbody>{''.join(table_rows)}</tbody></table>
+<p><a href="daily_summary.csv">Full daily summary</a></p>
+<small>Generated {escape(totals['generated_utc'])}. Refreshes every minute.
+Counts come from completed daily reports.</small></html>
+""", encoding='utf-8')
+    publish_report(temp, progress)
 
 
 def parser() -> argparse.ArgumentParser:
