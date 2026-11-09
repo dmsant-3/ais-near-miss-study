@@ -210,9 +210,9 @@ exec /usr/bin/flock -n .ais-cron.lock .venv/bin/python -u run_historical_near_mi
 Run `./run_cron.sh` once to verify installation. Then open your user crontab with `crontab -e` and add:
 
 ```cron
-17 */6 * * * "$HOME/ais-near-miss-study/run_cron.sh" >> "$HOME/ais-near-miss-study/cron.log" 2>&1
+*/15 * * * * /bin/sh "$HOME/ais-near-miss-study/run_cron.sh" >> "$HOME/ais-near-miss-study/cron.log" 2>&1
 ```
 
-This attempts one day every six hours, in the server's timezone. Completed days are skipped. A failure stops the batch, and the next run retries the unfinished day from the beginning. Keep the same start date, report directory, and work directory across runs. The end date advances automatically. Run the same wrapper for manual retries to avoid overlap.
+This attempts up to one day every 15 minutes, in the server's timezone. Completed days are skipped. A failure stops the batch, and the next run retries the unfinished day from the beginning. Keep the same start date, report directory, and work directory across runs. The end date advances automatically. Run the same wrapper for manual retries to avoid overlap.
 
 Cron mode spaces requests to each host by at least five seconds and caches NOAA indexes for one day for the current year and seven days for prior years. HTTP 429 pauses requests to the affected host for at least an hour. Temporary HTTP or connection failures pause for at least 15 minutes. A longer Retry-After value takes precedence, and cooldowns persist between runs. Missing observations can still appear as gaps. The schedule is intentionally slow for a multi-year backfill.
