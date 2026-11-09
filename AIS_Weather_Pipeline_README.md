@@ -94,6 +94,32 @@ Source files are cached in UTC daily snapshots with checksums. Repeated runs on 
 
 References: [GHCNh documentation](https://www.ncei.noaa.gov/oa/global-historical-climatology-network/hourly/doc/ghcnh_DOCUMENTATION.pdf), [NDBC measurement definitions](https://www.ndbc.noaa.gov/measdes.shtml), [CO-OPS data API](https://api.tidesandcurrents.noaa.gov/api/prod/), [CO-OPS station metadata](https://api.tidesandcurrents.noaa.gov/mdapi/prod/).
 
+## Historical batch screening for three U.S. ports
+
+`run_historical_near_miss_study.py` processes NOAA's daily CSV/Zstandard archives from 2016 onward for Port of New York and New Jersey, Port of Los Angeles, and Port of Houston. It downloads one daily file, runs the existing CPA/TCPA detector and the likely-near-miss evidence ranking for each port, writes the day's event reports, then removes that compressed AIS file and temporary working data before proceeding. The default pause between source days is five minutes. Only linked dates in NOAA's year indexes are processed; missing dates are skipped.
+
+A full run can take many days and download a very large volume of data. Start with a short pilot and no pause to validate your environment:
+
+```powershell
+python .\run_historical_near_miss_study.py --start-date 2016-01-01 --end-date 2016-01-03 --pause-seconds 0 --report-dir .\historical_pilot_report
+```
+
+List available files without downloading them:
+
+```powershell
+python .\run_historical_near_miss_study.py --start-date 2016-01-01 --end-date 2016-01-31 --dry-run
+```
+
+Run the full range with the default five-minute interval between days:
+
+```powershell
+python .\run_historical_near_miss_study.py --start-date 2016-01-01
+```
+
+The default end date is today; only files already published in the NOAA indexes are included. If interrupted, rerun with the same `--report-dir`; complete dates are skipped and unfinished dates are retried. Use a different report directory if changing the date range. `--max-days 5` limits a run to five available, unfinished dates.
+
+The report directory contains `likely_near_miss_report.csv` (highest-priority heuristic labels for human review), `candidate_review_report.csv` (all scored detector candidates), `daily_summary.csv`, and `report_summary.json`. Detailed daily detector/evidence outputs remain beneath `daily/`. The AIS daily download and its temporary SQLite files are deleted at the end of processing each day. The likely label is an AIS-based screening result, not confirmation that an incident occurred; review candidates against navigational context and independent reports before calling them near misses.
+
 ## Outputs
 
 Results are written to `ais_weather_results` by default:
@@ -124,6 +150,16 @@ python confirm_near_misses.py `
 
 The output labels events `rule_supported_candidate`, `close_pass_no_maneuver_evidence`, `no_close_pass_in_review_window`, or `insufficient_track_coverage`. It includes the measurements behind the label and blank human-review fields. A `rule_supported_candidate` is not automatically a confirmed near miss: an analyst must inspect the synchronized tracks, local operating context, vessel roles, and possible data artifacts, then enter a review label and notes. AIS alone cannot provide ground-truth confirmation.
 
+To rank evidence rows for review, run `rank_likely_near_misses.py` on that CSV. It applies the eight-point heuristic documented in `AIS_Near_Miss_Study_Plan.md`; the top class requires close observed separation within the size-adjusted screen, DCPA at most 0.25 nautical mile, positive TCPA within six minutes, maneuver evidence, adequate samples, and the full score. Example:
+
+```powershell
+python rank_likely_near_misses.py `
+  --input "AIS_2016-10-19_NY_Results\near_miss_evidence_review.csv" `
+  --output "AIS_2016-10-19_NY_Results\likely_near_miss_review_queue.csv"
+```
+
+This is a provisional ranking heuristic for human review, not a confirmation algorithm. The thresholds require local validation and sensitivity checks.
+
 The hourly weather table includes periods with no flagged events, but the pipeline does not yet calculate vessel-hours or statistical weather-risk associations. Exposure calculations remain necessary before comparing rates under different weather conditions.
 
 ## Options and repeat runs
@@ -145,3 +181,38 @@ python -m unittest test_count_ais_near_misses test_ais_weather_pipeline test_ais
 ```
 
 AIS source: [NOAA 2026 AIS index](https://noaaocm.blob.core.windows.net/ais/csv2/csv2026/index.html).
+
+## Ubuntu cron
+
+Install as a regular user. Push the updated source to GitHub before cloning it on the server. Use Python 3.10 or newer.
+
+```bash
+sudo apt update
+sudo apt install git python3-venv cron util-linux
+sudo systemctl enable --now cron
+git clone https://github.com/dmsant-3/ais-near-miss-study.git ~/ais-near-miss-study
+cd ~/ais-near-miss-study
+python3 -m venv .venv
+.venv/bin/python -m pip install zstandard
+```
+
+Create `run_cron.sh` in the checkout and run `chmod +x run_cron.sh`:
+
+```bash
+#!/bin/sh
+set -eu
+cd "$HOME/ais-near-miss-study"
+exec /usr/bin/flock -n .ais-cron.lock .venv/bin/python -u run_historical_near_miss_study.py \
+  --cron --start-date 2016-01-01 --max-days 1 --request-gap-seconds 5 \
+  --report-dir historical_cron_report --work-dir ais_cron_work
+```
+
+Run `./run_cron.sh` once to verify installation. Then open your user crontab with `crontab -e` and add:
+
+```cron
+17 */6 * * * "$HOME/ais-near-miss-study/run_cron.sh" >> "$HOME/ais-near-miss-study/cron.log" 2>&1
+```
+
+This attempts one day every six hours, in the server's timezone. Completed days are skipped. A failure stops the batch, and the next run retries the unfinished day from the beginning. Keep the same start date, report directory, and work directory across runs. The end date advances automatically. Run the same wrapper for manual retries to avoid overlap.
+
+Cron mode spaces requests to each host by at least five seconds and caches NOAA indexes for one day for the current year and seven days for prior years. HTTP 429 pauses requests to the affected host for at least an hour. Temporary HTTP or connection failures pause for at least 15 minutes. A longer Retry-After value takes precedence, and cooldowns persist between runs. Missing observations can still appear as gaps. The schedule is intentionally slow for a multi-year backfill.

@@ -6,7 +6,7 @@ from datetime import timedelta
 from bisect import bisect_left, bisect_right
 from math import cos, radians, hypot
 from pathlib import Path
-from urllib.request import urlopen
+from ais_request_policy import open_request as urlopen
 
 from count_ais_near_misses import open_csv, timestamp, utc
 from ais_weather_pipeline import weather_url, download

@@ -32,6 +32,30 @@ Screened events are candidates for **potential near misses**. A contextual revie
 
 The main statistical analysis will use screened event counts. Review results will indicate how often that screen captures encounters of navigational concern. If a secondary analysis uses reviewed labels, it must account for how events were selected for review.
 
+### Heuristic for prioritizing likely near misses
+
+For a reproducible first-pass review queue, `rank_likely_near_misses.py` assigns each event up to eight points from the evidence CSV produced by `confirm_near_misses.py`:
+
+| Evidence | Points |
+|---|---:|
+| Observed antenna-position separation is within the existing size-adjusted close-pass domain | 2 |
+| Minimum predicted DCPA is at most 0.1 nautical mile (2 points), or at most 0.25 nautical mile (1 point) | 0–2 |
+| TCPA at the minimum DCPA is positive and at most six minutes | 1 |
+| Either vessel has a course change of at least 15 degrees or a speed drop of at least 2 knots (the evidence script's maneuver rule) | 2 |
+| At least three synchronized baseline and encounter samples are available | 1 |
+
+The script labels an encounter `likely_near_miss_for_human_review` only when it earns all eight points and meets each gate: adequate coverage, observed separation within the size-adjusted domain, DCPA at most 0.25 nautical mile, positive TCPA within six minutes, and maneuver evidence. Scores of 5–7 are `elevated_priority_candidate`; lower scores are `lower_priority_candidate`. The labels sort review effort; they do not establish intent, danger, or confirmation. Course and speed changes may be routine, and the domain and numerical cutoffs are provisional study choices that need sensitivity analysis and local expert review. AIS antenna positions do not directly measure hull clearance.
+
+Run the ranking after generating track evidence:
+
+```powershell
+python rank_likely_near_misses.py `
+  --input "AIS_2026-05-05_NY_Results\near_miss_evidence_review.csv" `
+  --output "AIS_2026-05-05_NY_Results\likely_near_miss_review_queue.csv"
+```
+
+Review the highest-priority rows against synchronized tracks, vessel roles, channel context, and available radar, VDR, or incident records. Preserve the machine-generated class separately from the analyst's review label.
+
 ### Area, period, and population
 
 Begin with one port approach, channel, or coastal area and one day of AIS data to validate processing. The existing May 5, 2026 file is the pilot input. The weather analysis must then expand to multiple adverse and favorable periods; one day is insufficient to characterize a general weather association.

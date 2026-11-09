@@ -40,7 +40,8 @@ import tempfile
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
+from ais_request_policy import open_request as urlopen
 
 import count_ais_near_misses as detector
 import ais_environment as environment

@@ -13,6 +13,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import ais_request_policy
 import csv
 from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -26,7 +27,8 @@ import tempfile
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
+from ais_request_policy import open_request as urlopen
 
 import count_ais_near_misses as detector
 from ais_event_dashboard import export
@@ -99,12 +101,23 @@ def get(url: str) -> bytes:
     raise RuntimeError('NOAA request retries exhausted')
 
 
-def available_days(start: date, end: date) -> dict[date, str]:
+def available_days(start: date, end: date, index_cache: Path | None = None) -> dict[date, str]:
     links: dict[date, str] = {}
     for year in range(start.year, end.year + 1):
         parser = IndexParser(year)
         try:
-            parser.feed(get(parser.index_url).decode('utf-8'))
+            cached = index_cache / f'{year}.html' if index_cache else None
+            ttl = 86400 if year == date.today().year else 7 * 86400
+            if cached and cached.exists() and time.time() - cached.stat().st_mtime < ttl:
+                parser.feed(cached.read_text(encoding='utf-8'))
+            else:
+                content = get(parser.index_url).decode('utf-8')
+                parser.feed(content)
+                if cached and parser.links:
+                    temp = cached.with_suffix('.part')
+                    temp.write_text(content, encoding='utf-8')
+                    temp.replace(cached)
+
         except HTTPError as exc:
             if exc.code == 404:
                 print(f'No NOAA CSV archive for {year}; skipping.', flush=True)
@@ -293,6 +306,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--max-days', type=int,
                    help='Optional cap for a pilot run; omit to process every available day in range')
     p.add_argument('--dry-run', action='store_true', help='List available dates without downloading AIS files')
+    p.add_argument('--cron', action='store_true', help='Pace API calls and stop on the first failed day')
+    p.add_argument('--request-gap-seconds', type=float, default=5)
     p.add_argument('--node', help='Optional Node.js path when Python zstandard is unavailable')
     return p
 
@@ -307,6 +322,11 @@ def main(argv: list[str] | None = None) -> int:
     args.work_dir = args.work_dir.resolve()
     args.report_dir.mkdir(parents=True, exist_ok=True)
     args.work_dir.mkdir(parents=True, exist_ok=True)
+    if args.cron:
+        if not 1 <= args.request_gap_seconds <= 3600:
+            raise ValueError("Request gap must be between 1 and 3600 seconds")
+        ais_request_policy.configure(args.work_dir / "api_state", args.request_gap_seconds)
+        args.max_days = args.max_days or 1
     config_path = args.report_dir / 'run_config.json'
     config = {'start_date': args.start_date.isoformat(), 'end_date': args.end_date.isoformat(),
               'date_span_requested': [args.start_date.isoformat(), args.end_date.isoformat()],
@@ -314,12 +334,20 @@ def main(argv: list[str] | None = None) -> int:
               'screening': {'dcpa_max_m': 926, 'tcpa_max_seconds': 360}}
     if config_path.exists():
         prior = json.loads(config_path.read_text(encoding='utf-8'))
-        if prior.get('start_date') != config['start_date'] or prior.get('end_date') != config['end_date']:
+        if prior.get('start_date') != config['start_date'] or (prior.get('end_date') != config['end_date'] and
+                (not args.cron or config['end_date'] < prior.get('end_date', ''))):
             raise ValueError(f'{config_path} belongs to a different date range; choose another --report-dir')
-    else:
-        config_path.write_text(json.dumps(config, indent=2) + '\n', encoding='utf-8')
+    if not config_path.exists() or args.cron:
+        config_temp = config_path.with_suffix('.json.part')
+        config_temp.write_text(json.dumps(config, indent=2) + '\n', encoding='utf-8')
+        publish_report(config_temp, config_path)
 
-    links = available_days(args.start_date, args.end_date)
+    index_cache = args.work_dir / "api_state" if args.cron else None
+    try:
+        links = available_days(args.start_date, args.end_date, index_cache)
+    except ais_request_policy.DeferredRequest as exc:
+        print(exc, file=sys.stderr, flush=True)
+        return 1
     daily_root = args.report_dir / 'daily'
     daily_root.mkdir(parents=True, exist_ok=True)
     completed = {date.fromisoformat(p.parent.name) for p in daily_root.glob('*/summary.json')
@@ -345,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
                 def adjacent(other_day):
                     other_url = links.get(other_day)
                     if not other_url:
-                        other_url = available_days(other_day, other_day).get(other_day)
+                        other_url = available_days(other_day, other_day, index_cache).get(other_day)
                     if not other_url:
                         print(f'Adjacent AIS unavailable for {other_day}', flush=True)
                         return None
@@ -372,7 +400,10 @@ def main(argv: list[str] | None = None) -> int:
                     # OneDrive and Windows security software can deny directory
                     # renames even when creating files is allowed. Copy the
                     # compact results, and use summary.json as the completion marker.
-                    shutil.copytree(stage, day_target)
+                    if args.cron:
+                        stage.rename(day_target)
+                    else:
+                        shutil.copytree(stage, day_target)
             # The TemporaryDirectory scope above removes the compressed AIS file.
             rebuild_reports(args.report_dir)
             likely = sum(r['likely_for_human_review'] for r in port_results)
@@ -386,6 +417,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             failures += 1
             print(f'  FAILED {day.isoformat()}: {type(exc).__name__}: {exc}', file=sys.stderr, flush=True)
+            if args.cron:
+                break
         if index < len(pending) and args.pause_seconds:
             print(f'Waiting {args.pause_seconds} seconds before the next day.', flush=True)
             time.sleep(args.pause_seconds)
