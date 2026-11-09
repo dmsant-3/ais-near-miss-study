@@ -112,10 +112,10 @@ def load_events(path: Path) -> tuple[list[dict], set[str]]:
     return events, vessels
 
 
-def load_tracks(path: Path, vessels: set[str], bbox: list[float], max_speed: float) -> dict:
+def load_tracks(path: Path, vessels: set[str], bbox: list[float], max_speed: float, tugboats: set[str] | None = None) -> dict:
     west, south, east, north = bbox
     aliases = {'mmsi':'mmsi', 'basedatetime':'time', 'longitude':'lon', 'lon':'lon',
-               'latitude':'lat', 'lat':'lat', 'sog':'sog', 'cog':'cog', 'length':'length'}
+               'latitude':'lat', 'lat':'lat', 'sog':'sog', 'cog':'cog', 'length':'length', 'vesseltype':'vesseltype'}
     tracks: dict[str, list[tuple]] = {m: [] for m in vessels}
     bad = 0
     seen = 0
@@ -131,6 +131,9 @@ def load_tracks(path: Path, vessels: set[str], bbox: list[float], max_speed: flo
             m = (row.get(mapping['mmsi']) or '').strip()
             if m not in tracks:
                 continue
+            vessel_type = (row.get(mapping.get("vesseltype", "")) or "").strip().casefold()
+            if tugboats is not None and vessel_type in {"52", "52.0", "tug", "tugboat"}:
+                tugboats.add(m)
             try:
                 t = detector.timestamp(row[mapping['time']])
                 lon, lat = float(row[mapping['lon']]), float(row[mapping['lat']])
@@ -200,6 +203,23 @@ def evidence_for(event: dict, tracks: dict, args) -> dict:
     adequate = n_before >= args.min_samples and n_encounter >= args.min_samples
     closest = min(distances,key=lambda x:x[0]) if distances else None
     min_distance = closest[0] if closest else None
+    coordinated = False
+    transient = False
+    if closest:
+        near = [(t, pa, pb) for d,t,pa,pb in distances
+                if d <= min_distance + 50 and abs(pa[2]-pb[2]) <= 1
+                and min(pa[2],pb[2]) >= 1
+                and circular_difference(pa[3],pb[3]) <= 20]
+        run_start = previous = None
+        for t, _, _ in near:
+            if previous is None or t-previous > args.step_seconds:
+                run_start = t
+            coordinated |= t-run_start >= 180
+            previous = t
+        transient = all(any(
+            60 <= sign*(t-closest[1]) <= 300 and d >= min_distance+100
+            for d,t,_,_ in distances) for sign in (-1,1))
+
     sizes = [p[4] for p in closest[2:] if p[4] is not None] if closest else []
     size_screen = max(args.min_close_distance_m, sum(sizes)/2) if sizes else args.min_close_distance_m
     maneuver_a = bool(course_evasion_a or speed_evasion_a)
@@ -221,6 +241,11 @@ def evidence_for(event: dict, tracks: dict, args) -> dict:
         'distance_threshold_used_m':round(size_screen,2),
         'ship_length_a_near_pass_m':round(closest[2][4],1) if closest and closest[2][4] is not None else '',
         'ship_length_b_near_pass_m':round(closest[3][4],1) if closest and closest[3][4] is not None else '',
+        'baseline_course_difference_deg': (circular_difference(course_a, course_b)
+            if course_a is not None and course_b is not None else None),
+        'tug_track_pattern': ('probable_assist' if coordinated else
+                              'possible_conflict' if adequate and transient and (maneuver_a or maneuver_b)
+                              else 'uncertain'),
         'synchronized_baseline_samples':n_before,
         'synchronized_encounter_samples':n_encounter,
         'max_course_change_a_deg':round(change_a,1) if change_a is not None else '',
@@ -261,13 +286,14 @@ def main(argv=None) -> int:
     if args.output.exists():
         raise FileExistsError(f'Refusing to overwrite {args.output}')
     events,vessels=load_events(args.events)
-    tracks=load_tracks(args.ais_file.resolve(strict=True),vessels,args.bbox,args.max_speed_knots)
+    tugboats = set()
+    tracks=load_tracks(args.ais_file.resolve(strict=True),vessels,args.bbox,args.max_speed_knots,tugboats)
     fields=list(events[0].keys())
     fields=[x for x in fields if not x.startswith('_')]
-    evidence_fields=['rule_classification','human_review_label','reviewer_notes',
+    evidence_fields=['tug_track_pattern','involves_tugboat','rule_classification','human_review_label','reviewer_notes',
         'observed_min_separation_in_window_m','distance_time_utc','distance_threshold_used_m',
         'ship_length_a_near_pass_m','ship_length_b_near_pass_m','synchronized_baseline_samples',
-        'synchronized_encounter_samples','max_course_change_a_deg','max_course_change_b_deg',
+        'baseline_course_difference_deg','synchronized_encounter_samples','max_course_change_a_deg','max_course_change_b_deg',
         'max_speed_drop_a_knots','max_speed_drop_b_knots','maneuver_evidence_a','maneuver_evidence_b']
     args.output.parent.mkdir(parents=True,exist_ok=True)
     counts={}
@@ -276,6 +302,7 @@ def main(argv=None) -> int:
         writer.writeheader()
         for i,event in enumerate(events,1):
             evidence=evidence_for(event,tracks,args)
+            evidence["involves_tugboat"] = bool(tugboats.intersection((event["_a"], event["_b"])))
             counts[evidence['rule_classification']]=counts.get(evidence['rule_classification'],0)+1
             writer.writerow({**event,**evidence})
             if i % 1000 == 0:
