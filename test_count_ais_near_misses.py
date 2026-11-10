@@ -10,6 +10,17 @@ import count_ais_near_misses as ais
 
 
 class DetectionTests(unittest.TestCase):
+    def test_working_database_limit_stops_analysis(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'input.csv'
+            source.write_text('MMSI,BaseDateTime,LON,LAT,SOG,COG\n', encoding='utf-8')
+            with self.assertRaises(sqlite3.DatabaseError):
+                ais.main([str(source), '--output-dir', str(root / 'out'),
+                          '--work-dir', str(root), '--max-working-bytes', '4096'])
+            self.assertFalse((root / 'out' / 'summary.json').exists())
+
     def test_relative_motion(self):
         # B is 1000 m east; A and B close at 10 m/s each.
         lon = math.degrees(1000/ais.EARTH_R)

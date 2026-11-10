@@ -166,6 +166,7 @@ class CompactStoreTests(unittest.TestCase):
         ]
         self.results[0]['environment_hourly'] = {
             0: [{'measurement': 'modeled_wind', 'speed_mps': 0, 'direction_deg': None}]}
+        self.results[0]['traffic_hourly'] = [{'hour': 0, 'unique_moving': 3, 'unique_anchored': 1}]
         self.publish()
         with closing(reader.open_reader(self.path)) as db:
             first = reader.encounters(db, self.day, 'NY', 1)
@@ -176,6 +177,7 @@ class CompactStoreTests(unittest.TestCase):
                                 second['encounters'][0]['encounter_id'])
             data = reader.replay(db, self.day, 'NY', first['encounters'][0]['encounter_id'])
             self.assertEqual(data['wind'][0], [0, None])
+            self.assertEqual(data['traffic'][0], {'moving': 3, 'anchored': 1})
             with self.assertRaises(sqlite3.OperationalError):
                 db.execute('DELETE FROM study_day')
 

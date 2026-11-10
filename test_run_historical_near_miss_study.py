@@ -55,7 +55,7 @@ class CompactRunnerTests(unittest.TestCase):
                 return {'source_url': url, 'sha256': 'fixture', 'compressed_bytes': 3}
 
             def analyze(day, port, bbox, ais, staging, node, adjacent, compact=False,
-                        cache_policy=None, retain_audit_candidates=False):
+                        cache_policy=None, retain_audit_candidates=False, work_reserve_bytes=0):
                 self.assertTrue(compact)
                 return {'port': port, 'potential_events': 0, 'likely_for_human_review': 0,
                         'elevated_priority_candidates': 0, 'lower_priority_candidates': 0,

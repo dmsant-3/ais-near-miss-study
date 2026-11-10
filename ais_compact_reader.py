@@ -98,7 +98,14 @@ def replay(connection: sqlite3.Connection, day: date, port: str, event_id: str) 
         marine.setdefault(hour, []).append(record)
         if record['measurement'] == 'modeled_wind':
             wind[hour] = [record['speed_mps'], record['direction_deg']]
-    return {'events': [event], 'wind': wind, 'marine': marine}
+    traffic_rows = connection.execute(
+        'SELECT hour, unique_moving, unique_anchored FROM traffic_hour '
+        'WHERE ais_date=? AND port=? AND hour BETWEEN ? AND ?',
+        (day.isoformat(), port, first_hour, last_hour),
+    )
+    traffic = {item['hour']: {'moving': item['unique_moving'], 'anchored': item['unique_anchored']}
+               for item in traffic_rows}
+    return {'events': [event], 'wind': wind, 'marine': marine, 'traffic': traffic}
 
 
 def dashboard_shell() -> str:
@@ -124,6 +131,7 @@ async function loadSelected() {
   d.events[selection] = Object.assign(data.events[0], {encounter_id: summary.encounter_id});
   d.wind = data.wind;
   d.marine = data.marine;
+  d.traffic = data.traffic;
   selectEvent();
   if (typeof updateShipLegend === 'function') updateShipLegend();
  } catch (error) {
@@ -161,6 +169,10 @@ loadPage();
 """
     shell = HTML.replace('DATA_PLACEHOLDER', '{"events":[],"wind":{},"marine":{}}')
     shell = shell.replace("if(!e){details.textContent=", "if(!e || !e.tracks){details.textContent=")
+    shell = shell.replace(" c.fillStyle='#142536';c.font='16px system-ui';c.fillText(details.textContent,20,25);",
+                          " const counts=d.traffic?.[hour]; if(counts) details.textContent += "
+                          "' · Traffic ' + counts.moving + ' moving, ' + counts.anchored + ' anchored';\n"
+                          " c.fillStyle='#142536';c.font='16px system-ui';c.fillText(details.textContent,20,25);")
     shell = shell.replace('sel.onchange=()=>{pause();selectEvent();};', 'sel.onchange=loadSelected;')
     return shell.replace('selectEvent();\n</script>', script + '\n</script>')
 

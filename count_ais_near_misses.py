@@ -317,6 +317,8 @@ def parser():
     p.add_argument('input', type=Path)
     p.add_argument('--output-dir', type=Path, default=Path('near_miss_results'))
     p.add_argument('--work-dir', type=Path, help='Existing folder for temporary SQLite file')
+    p.add_argument('--max-working-bytes', type=int,
+                   help='Maximum size of the temporary SQLite database in bytes')
     p.add_argument('--node', help='Node.js executable, used only if zstandard is unavailable')
     p.add_argument('--bbox', nargs=4, type=float, metavar=('WEST','SOUTH','EAST','NORTH'),
                    help='Filter reports to this box; use a buffer around the area of interest')
@@ -333,6 +335,8 @@ def parser():
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.max_working_bytes is not None and args.max_working_bytes < 4096:
+        raise ValueError('--max-working-bytes must be at least 4096')
     for key in ('dcpa_meters','tcpa_seconds','step_seconds','max_gap_seconds',
                 'merge_gap_seconds','max_speed_knots'):
         if not math.isfinite(getattr(args,key)) or getattr(args,key) <= 0:
@@ -356,6 +360,10 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix='ais_near_miss_',dir=args.work_dir) as folder:
         db = sqlite3.connect(str(Path(folder)/'working.sqlite'))
         try:
+            if args.max_working_bytes is not None:
+                page_size = db.execute('PRAGMA page_size').fetchone()[0]
+                max_pages = args.max_working_bytes // page_size
+                db.execute(f'PRAGMA max_page_count = {max_pages}')
             db.execute('PRAGMA journal_mode=OFF')
             db.execute('PRAGMA synchronous=OFF')
             db.execute('PRAGMA temp_store=FILE')

@@ -173,7 +173,8 @@ def run_command(args: list[str]) -> None:
 
 def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
                  staging: Path, node: str | None, adjacent=None, compact=False,
-                 cache_policy=None, retain_audit_candidates=False) -> dict:
+                 cache_policy=None, retain_audit_candidates=False,
+                 work_reserve_bytes=0) -> dict:
     port_dir = staging / port
     detected_dir = port_dir / 'detected'
     detected_dir.mkdir(parents=True)
@@ -181,6 +182,12 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
     summary = detected_dir / 'summary.json'
     common = [sys.executable, str(Path(__file__).with_name('count_ais_near_misses.py')),
               str(ais), '--bbox', *(str(v) for v in bbox), '--output-dir', str(detected_dir)]
+    if compact:
+        common += ['--work-dir', str(staging)]
+        database_budget = shutil.disk_usage(staging).free - work_reserve_bytes
+        if database_budget < 4096:
+            raise OSError('Insufficient free space for detector and scratch reserve')
+        common += ['--max-working-bytes', str(database_budget)]
     if node:
         common += ['--node', node]
     run_command(common)
@@ -401,7 +408,8 @@ def run_compact(args) -> int:
                     for port, bbox in PORTS.items():
                         result = analyze_port(day, port, bbox, ais, temp, args.node, adjacent,
                                               compact=True, cache_policy=cache,
-                                              retain_audit_candidates=args.retain_audit_candidates)
+                                              retain_audit_candidates=args.retain_audit_candidates,
+                                              work_reserve_bytes=work_reserve)
                         staged = temp / f'{port}.compact.json'
                         with staged.open('w', encoding='utf-8') as stream:
                             json.dump(result, stream, allow_nan=False, separators=(',', ':'))
