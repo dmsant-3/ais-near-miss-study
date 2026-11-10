@@ -79,13 +79,9 @@ def score_row(row: dict[str, str], fields: dict[str, str]) -> dict[str, object]:
     if course_difference is not None and course_difference > 20:
         points += 1
         reasons.append("pre-encounter courses differ by more than 20 degrees")
-    if truth(row.get(fields.get('involvestugboat', ''), '')):
-        pattern = row.get(fields.get('tugtrackpattern', ''), '')
-        if pattern == 'possible_conflict' and coverage and close and imminent and maneuver and points >= 5:
-            label = 'likely_near_miss_for_human_review' if points >= 8 else 'elevated_priority_candidate'
-        else:
-            label = 'excluded_tugboat'
-
+    if any(truth(row.get(fields.get(field, ''), ''))
+           for field in ('involvesexcludedvessel', 'involvestugboat')):
+        label = 'excluded_barge_or_tug'
     elif not coverage:
         label = "excluded_insufficient_track_coverage"
     elif points >= 8 and close and imminent and maneuver:

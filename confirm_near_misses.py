@@ -112,6 +112,13 @@ def load_events(path: Path) -> tuple[list[dict], set[str]]:
     return events, vessels
 
 
+def excluded_vessel_type(value):
+    """Recognize Marine Cadastre tug, towing and explicit barge types."""
+    value = (value or '').strip().casefold().removesuffix('.0')
+    return value in {'31','32','52','1003','1014','1015','1023','1025',
+                     'tug','tugboat','towing','towing vessel'} or 'barge' in value.split()
+
+
 def load_tracks(path: Path, vessels: set[str], bbox: list[float], max_speed: float, tugboats: set[str] | None = None) -> dict:
     west, south, east, north = bbox
     aliases = {'mmsi':'mmsi', 'basedatetime':'time', 'longitude':'lon', 'lon':'lon',
@@ -132,7 +139,7 @@ def load_tracks(path: Path, vessels: set[str], bbox: list[float], max_speed: flo
             if m not in tracks:
                 continue
             vessel_type = (row.get(mapping.get("vesseltype", "")) or "").strip().casefold()
-            if tugboats is not None and vessel_type in {"52", "52.0", "tug", "tugboat"}:
+            if tugboats is not None and excluded_vessel_type(vessel_type):
                 tugboats.add(m)
             try:
                 t = detector.timestamp(row[mapping['time']])
@@ -290,7 +297,7 @@ def main(argv=None) -> int:
     tracks=load_tracks(args.ais_file.resolve(strict=True),vessels,args.bbox,args.max_speed_knots,tugboats)
     fields=list(events[0].keys())
     fields=[x for x in fields if not x.startswith('_')]
-    evidence_fields=['tug_track_pattern','involves_tugboat','rule_classification','human_review_label','reviewer_notes',
+    evidence_fields=['tug_track_pattern','involves_excluded_vessel','rule_classification','human_review_label','reviewer_notes',
         'observed_min_separation_in_window_m','distance_time_utc','distance_threshold_used_m',
         'ship_length_a_near_pass_m','ship_length_b_near_pass_m','synchronized_baseline_samples',
         'baseline_course_difference_deg','synchronized_encounter_samples','max_course_change_a_deg','max_course_change_b_deg',
@@ -302,7 +309,7 @@ def main(argv=None) -> int:
         writer.writeheader()
         for i,event in enumerate(events,1):
             evidence=evidence_for(event,tracks,args)
-            evidence["involves_tugboat"] = bool(tugboats.intersection((event["_a"], event["_b"])))
+            evidence["involves_excluded_vessel"] = bool(tugboats.intersection((event["_a"], event["_b"])))
             counts[evidence['rule_classification']]=counts.get(evidence['rule_classification'],0)+1
             writer.writerow({**event,**evidence})
             if i % 1000 == 0:

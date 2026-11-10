@@ -45,7 +45,7 @@ PORTS = {
 RANK_FIELDS = ['likely_near_miss_score_7', 'likely_near_miss_score_8', 'likely_near_miss_classification',
                'likely_near_miss_evidence', 'likely_near_miss_human_review']
 EVIDENCE_FIELDS = [
-    "involves_tugboat", "tug_track_pattern",
+    "involves_excluded_vessel", "involves_tugboat", "tug_track_pattern",
     "baseline_course_difference_deg",
     'rule_classification', 'human_review_label', 'reviewer_notes',
     'observed_min_separation_in_window_m', 'distance_time_utc',
@@ -239,7 +239,6 @@ def rebuild_reports(report_dir: Path) -> None:
     """Regenerate aggregate reports from committed per-day results."""
     all_candidates: list[dict] = []
     likely: list[dict] = []
-    tug_review: list[dict] = []
     daily: list[dict] = []
     for summary_path in sorted((report_dir / 'daily').glob('*/summary.json')):
         summary = json.loads(summary_path.read_text(encoding='utf-8'))
@@ -255,17 +254,14 @@ def rebuild_reports(report_dir: Path) -> None:
                 for row in csv.DictReader(stream):
                     record = {'ais_date': summary['date'], 'port': result['port'], **row}
                     label = row['likely_near_miss_classification']
-                    if label in ('separate_tugboat_review', 'excluded_tugboat'):
+                    if label in ('separate_tugboat_review', 'excluded_tugboat', 'excluded_barge_or_tug') or row.get('involves_tugboat', '').lower() == 'true':
                         continue
                     all_candidates.append(record)
-                    if row.get('involves_tugboat', '').lower() == 'true' and row.get('tug_track_pattern') == 'possible_conflict':
-                        tug_review.append(record)
                     if row['likely_near_miss_classification'] in ('likely_near_miss_for_human_review', 'elevated_priority_candidate'):
                         likely.append(record)
     report_dir.mkdir(parents=True, exist_ok=True)
     write_csv_atomic(report_dir / 'candidate_review_report.csv', REPORT_FIELDS, all_candidates)
     write_csv_atomic(report_dir / 'likely_near_miss_report.csv', REPORT_FIELDS, likely)
-    write_csv_atomic(report_dir / 'tugboat_review_report.csv', REPORT_FIELDS, tug_review)
     daily_fields = ['date', 'port', 'status', 'potential_events',
                     'likely_for_human_review', 'elevated_priority_candidates',
                     'lower_priority_candidates', 'scored_file']

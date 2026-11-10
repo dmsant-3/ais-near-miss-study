@@ -10,6 +10,7 @@ from ais_request_policy import open_request as urlopen
 
 from count_ais_near_misses import open_csv, timestamp, utc
 from ais_weather_pipeline import weather_url, download
+from confirm_near_misses import excluded_vessel_type
 from ais_environment import EnvironmentalDownloader, distance_km
 from types import SimpleNamespace
 
@@ -51,7 +52,7 @@ def export(day, bbox, ais, folder, scored, node, adjacent=None):
                 except (KeyError, ValueError, TypeError):
                     continue
                 vessel_type = (row.get('vesseltype') or '').strip().casefold()
-                if vessel_type in {'52', '52.0', 'tug', 'tugboat'}:
+                if excluded_vessel_type(vessel_type):
                     tugboats.add(ship)
                 anchored = row.get('status') in ('1', '1.0') and 0 <= speed < 1
                 state = 'anchored' if anchored else 'moving' if 1 <= speed < 100 else ''
@@ -66,9 +67,8 @@ def export(day, bbox, ais, folder, scored, node, adjacent=None):
         for i in range(24):
             writer.writerow([utc(start+i*3600), len(traffic[i,'moving']), len(traffic[i,'anchored'])])
     eligible = [(event, window) for event, window in zip(events, windows)
-                if (event.get('tug_track_pattern') == 'possible_conflict' or
-                    not tugboats.intersection((event['mmsi_a'], event['mmsi_b'])))]
-    print(f'Excluded {len(events)-len(eligible)} tugboat encounters from replay', flush=True)
+                if not tugboats.intersection((event['mmsi_a'], event['mmsi_b']))]
+    print(f'Excluded {len(events)-len(eligible)} barge or tug encounters from replay', flush=True)
     wind = {}
     try:
         with urlopen(weather_url(day-timedelta(days=1),(west+east)/2,(south+north)/2).replace('end_date='+str(day), 'end_date='+str(day+timedelta(days=1))), timeout=30) as response:
