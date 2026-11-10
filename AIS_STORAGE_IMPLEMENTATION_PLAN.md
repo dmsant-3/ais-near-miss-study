@@ -2,6 +2,11 @@
 
 The compact path stores 30 AIS dates for the three configured ports. Use decimal byte limits of `10_000_000_000` for retained output and `2_000_000_000` for response bodies. Set scratch reserves from measurements on the report and work volumes. See the [AIS storage reduction plan](AIS_STORAGE_REDUCTION_PLAN.md) for the design goals.
 
+## Implementation notes
+
+- The historical runner records the availability, source URL, byte count, and checksum of adjacent AIS files in each new daily summary. An unavailable adjacent date is recorded once per attempt.
+- The compact SQLite store, compact runner, dashboard endpoints, storage limits, cache policy, migration, and parity checks remain to be implemented. Existing reports lack the new adjacent-source records.
+
 ## Batch entry point and publishing
 
 | File or function | Change |

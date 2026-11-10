@@ -417,18 +417,24 @@ def main(argv: list[str] | None = None) -> int:
             with tempfile.TemporaryDirectory(prefix=f'ais_{day.isoformat()}_', dir=args.work_dir) as temp_name:
                 temp = Path(temp_name)
                 ais = temp / f'ais-{day.isoformat()}.csv.zst'
+                adjacent_sources = {}
                 def adjacent(other_day):
+                    source_date = other_day.isoformat()
+                    if source_date in adjacent_sources:
+                        source = adjacent_sources[source_date]
+                        return temp / f'ais-{source_date}.csv.zst' if source['available'] else None
                     other_url = links.get(other_day)
                     if not other_url:
                         log_progress(args.report_dir, f'{day} warning: adjacent AIS unavailable for {other_day}')
                         other_url = available_days(other_day, other_day, index_cache).get(other_day)
                     if not other_url:
                         print(f'Adjacent AIS unavailable for {other_day}', flush=True)
+                        adjacent_sources[source_date] = {'available': False}
                         return None
                     target = temp / f'ais-{other_day}.csv.zst'
-                    if not target.exists():
-                        download(other_url, target)
-                        log_progress(args.report_dir, f'{day} downloaded adjacent AIS for {other_day}')
+                    source = download(other_url, target)
+                    adjacent_sources[source_date] = {'available': True, **source}
+                    log_progress(args.report_dir, f'{day} downloaded adjacent AIS for {other_day}')
                     return target
 
                 provenance = download(url, ais)
@@ -449,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
                         log_progress(args.report_dir, f'{day} {port} processing completed')
                     (stage / 'summary.json').write_text(json.dumps({
                         'date': day.isoformat(), 'source': provenance,
+                        'adjacent_sources': adjacent_sources,
                         'file_deleted_after_processing': True, 'ports': port_results,
                     }, indent=2) + '\n', encoding='utf-8')
                     if day_target.exists():
