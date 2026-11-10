@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 import ais_compact_store as store
+import ais_compact_reader as reader
 
 
 class CompactStoreTests(unittest.TestCase):
@@ -151,6 +152,32 @@ class CompactStoreTests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.publish()
         self.assertEqual(store.completed_dates(self.db), set())
+
+    def test_read_only_pagination_and_replay(self):
+        base = {'mmsi_a': '111', 'mmsi_b': '222', 'window_start': 90, 'window_end': 120,
+                'vessels': [{'mmsi': '111', 'role': 'involved'}]}
+        self.results[0]['encounters'] = [
+            dict(base, first_flag_utc='2020-01-02T00:00:00Z',
+                 details={'likely_near_miss_score_8': '8', 'distance_time_utc': '2020-01-02T00:01:00Z'}),
+            dict(base, first_flag_utc='2020-01-02T00:02:00Z',
+                 details={'likely_near_miss_score_8': '8', 'distance_time_utc': '2020-01-02T00:03:00Z'}),
+            dict(base, first_flag_utc='2020-01-02T00:04:00Z',
+                 details={'likely_near_miss_score_8': '6', 'distance_time_utc': '2020-01-02T00:05:00Z'}),
+        ]
+        self.results[0]['environment_hourly'] = {
+            0: [{'measurement': 'modeled_wind', 'speed_mps': 0, 'direction_deg': None}]}
+        self.publish()
+        with closing(reader.open_reader(self.path)) as db:
+            first = reader.encounters(db, self.day, 'NY', 1)
+            second = reader.encounters(db, self.day, 'NY', 1, first['next_cursor'])
+            self.assertEqual(len(first['encounters']), 1)
+            self.assertIsNone(second['next_cursor'])
+            self.assertNotEqual(first['encounters'][0]['encounter_id'],
+                                second['encounters'][0]['encounter_id'])
+            data = reader.replay(db, self.day, 'NY', first['encounters'][0]['encounter_id'])
+            self.assertEqual(data['wind'][0], [0, None])
+            with self.assertRaises(sqlite3.OperationalError):
+                db.execute('DELETE FROM study_day')
 
 
 if __name__ == '__main__':
