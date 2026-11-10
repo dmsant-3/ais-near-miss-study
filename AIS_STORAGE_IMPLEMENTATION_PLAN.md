@@ -13,7 +13,8 @@ The compact path stores 30 AIS dates for the three configured ports. Use decimal
 - Compact runs stage one port at a time, record a bounded latest-run status, and account for shared-volume scratch reserves. The progress API includes that status and the stored study configuration. Download checks preserve the configured scratch reserve for AIS and cached environmental bodies.
 - Compact detector databases are created on the configured work volume and limited by the available space above the scratch reserve. Selected replay responses include hourly moving and anchored traffic counts.
 - The cron wrapper accepts explicit compact study dates and measured reserve settings. The compact run configuration records a hash of the detector, confirmation and ranking scripts for reproducibility.
-- Complete retained-output accounting and peak measurements, historical cache reuse, legacy report migration, browser parity checks and a representative 30-date pilot remain outstanding. Existing reports lack the new adjacent-source records. The compact dashboard requires Python 3 on the server path or `AIS_PYTHON`.
+- The one-date legacy importer validates source metadata, port summaries, hourly traffic and replay tracks before committing. It infers each sample's source date from its UTC timestamp and refuses samples without matching recorded source metadata. Older reports without the required summaries or checksums need the original sources or a separately verified archive.
+- Complete retained-output accounting and peak measurements, historical cache reuse, browser parity checks and a representative 30-date pilot remain outstanding. The compact dashboard requires Python 3 on the server path or `AIS_PYTHON`.
 
 ## Batch entry point and publishing
 

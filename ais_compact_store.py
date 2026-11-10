@@ -178,7 +178,7 @@ def encounter_id(day: date, port: str, mmsi_a: str, mmsi_b: str,
 
 def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                 port_results: list[dict], port_bounds: dict,
-                scoring_version: str) -> None:
+                scoring_version: str, validate=None) -> None:
     """Atomically publish source provenance and one result for each configured port.
 
     `sources` maps ISO dates to download metadata and an availability flag.
@@ -276,6 +276,8 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                         'INSERT INTO encounter_vessel VALUES (?, ?, ?, ?, ?)',
                         (day_text, port, event_id, vessel['mmsi'], vessel['role']),
                     )
+        if validate is not None:
+            validate(connection)
         connection.commit()
     except BaseException:
         connection.rollback()
