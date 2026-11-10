@@ -44,6 +44,28 @@ def progress(connection: sqlite3.Connection) -> dict:
     return {'ports': ports, 'storage_measurements': measurements, 'projection': projections}
 
 
+def provenance(connection: sqlite3.Connection, day: date, port: str) -> dict:
+    day_text = day.isoformat()
+    row = connection.execute(
+        'SELECT d.scoring_version, p.bbox_json, p.detector_quality '
+        'FROM study_day d JOIN port_day p ON p.ais_date=d.ais_date '
+        'WHERE d.ais_date=? AND p.port=?', (day_text, port),
+    ).fetchone()
+    if row is None:
+        raise KeyError((day_text, port))
+    source = connection.execute(
+        'SELECT source_date, available, source_url, sha256, compressed_bytes '
+        'FROM ais_source WHERE ais_date=? ORDER BY source_date', (day_text,))
+    environment = connection.execute(
+        'SELECT report_json FROM environment_source WHERE ais_date=? AND port=?', (day_text, port),
+    ).fetchone()
+    return {'date': day_text, 'port': port, 'scoring_version': row['scoring_version'],
+            'bbox_wgs84': json.loads(row['bbox_json']),
+            'detector_quality': json.loads(row['detector_quality']),
+            'ais_sources': [dict(item) for item in source],
+            'environment_sources': json.loads(environment['report_json']) if environment else None}
+
+
 def encounters(connection: sqlite3.Connection, day: date, port: str,
                limit: int = 50, cursor: str | None = None) -> dict:
     if not 1 <= limit <= 100:
@@ -328,7 +350,8 @@ def export_csv(connection: sqlite3.Connection, kind: str, day: date, port: str |
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('database', type=Path)
-    parser.add_argument('action', choices=['progress', 'encounters', 'replay', 'shell', 'export'])
+    parser.add_argument('action', choices=['progress', 'encounters', 'replay', 'shell', 'export',
+                                           'provenance'])
     parser.add_argument('--date', type=date.fromisoformat)
     parser.add_argument('--port')
     parser.add_argument('--limit', type=int, default=50)
@@ -352,6 +375,8 @@ def main() -> None:
             result = progress(connection)
         elif args.action == 'encounters':
             result = encounters(connection, args.date, args.port, args.limit, args.cursor)
+        elif args.action == 'provenance':
+            result = provenance(connection, args.date, args.port)
         elif args.action == 'export':
             export_csv(connection, args.kind, args.date, args.port, args.encounter, sys.stdout)
             return

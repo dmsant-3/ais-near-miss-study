@@ -66,6 +66,9 @@ class CompactDashboardTests(unittest.TestCase):
                 else:
                     self.fail(f'Dashboard did not start: {last_error}')
                 self.assertEqual(progress['ports'][0]['port'], port)
+                with urlopen(base + f'/api/days/{day}/ports/{port}/provenance', timeout=10) as response:
+                    provenance = json.load(response)
+                self.assertEqual(provenance['ais_sources'][0]['sha256'], 'fixture')
                 prefix = f'/api/days/{day}/ports/{port}/encounters'
                 with urlopen(base + prefix, timeout=10) as response:
                     events = json.load(response)['encounters']

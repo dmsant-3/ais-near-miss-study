@@ -214,7 +214,8 @@ http.createServer(async (req, res) => {
                     '&amp;port=' + row.port + '">candidates CSV</a> · <a href="/api/export/likely?date=' +
                     row.ais_date + '&amp;port=' + row.port + '">review CSV</a> · <a href="/api/export/traffic?date=' +
                     row.ais_date + '&amp;port=' + row.port + '">traffic CSV</a> · <a href="/api/export/environment?date=' +
-                    row.ais_date + '&amp;port=' + row.port + '">environment CSV</a></li>');
+                    row.ais_date + '&amp;port=' + row.port + '">environment CSV</a> · <a href="/api/days/' +
+                    row.ais_date + '/ports/' + row.port + '/provenance">provenance</a></li>');
                 const escapeHtml = value => String(value).replace(/[&<>"']/g, char =>
                     ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
                 const status = data.status ? '<p>Latest run: ' + escapeHtml(data.status.state) +
@@ -289,6 +290,20 @@ http.createServer(async (req, res) => {
                         child.stdout.pipe(res);
                     }
                 });
+                return;
+            }
+            const provenanceMatch = /^\/api\/days\/(\d{4}-\d{2}-\d{2})\/ports\/([A-Za-z_]+)\/provenance$/.exec(route);
+            if (provenanceMatch && ports.includes(provenanceMatch[2])) {
+                try {
+                    const data = await compactReader('provenance', ['--date', provenanceMatch[1], '--port', provenanceMatch[2]]);
+                    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                    res.end(data);
+                } catch (error) {
+                    const stderr = String(error.stderr || '');
+                    res.writeHead(stderr.includes('KeyError') ? 404 : stderr.includes('ValueError') ? 400 :
+                        stderr.includes('database is locked') ? 503 : 500)
+                        .end('Could not load provenance');
+                }
                 return;
             }
             const matchApi = /^\/api\/days\/(\d{4}-\d{2}-\d{2})\/ports\/([A-Za-z_]+)\/encounters(?:\/([a-f0-9]{64}))?$/.exec(route);

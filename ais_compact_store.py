@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 import sqlite3
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 NUMERIC_FIELDS = (
     'flag_count', 'minimum_flagged_separation_m', 'minimum_dcpa_m',
@@ -242,6 +242,35 @@ CREATE VIEW environment_hour AS
     FROM replay_hour r JOIN environment_observation o ON o.observation_id = r.observation_id;
 """
 
+VESSEL_SCHEMA = """
+CREATE TABLE vessel_name (
+    name_id INTEGER PRIMARY KEY,
+    mmsi TEXT NOT NULL,
+    name TEXT NOT NULL,
+    UNIQUE (mmsi, name)
+);
+INSERT INTO vessel_name (mmsi, name)
+    SELECT DISTINCT mmsi, name FROM track_sample;
+CREATE TABLE track_sample_new (
+    port TEXT NOT NULL,
+    source_date TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    mmsi TEXT NOT NULL,
+    tick INTEGER NOT NULL,
+    longitude REAL NOT NULL,
+    latitude REAL NOT NULL,
+    name_id INTEGER NOT NULL REFERENCES vessel_name(name_id),
+    anchored INTEGER NOT NULL CHECK (anchored IN (0, 1)),
+    PRIMARY KEY (port, source_date, sha256, mmsi, tick, longitude, latitude, name_id, anchored),
+    FOREIGN KEY (source_date, sha256) REFERENCES source_file(source_date, sha256)
+) WITHOUT ROWID;
+INSERT INTO track_sample_new
+    SELECT t.port, t.source_date, t.sha256, t.mmsi, t.tick, t.longitude, t.latitude, n.name_id, t.anchored
+    FROM track_sample t JOIN vessel_name n ON n.mmsi=t.mmsi AND n.name=t.name;
+DROP TABLE track_sample;
+ALTER TABLE track_sample_new RENAME TO track_sample;
+"""
+
 
 def _number(value):
     try:
@@ -294,37 +323,42 @@ def open_writer(path: Path, max_bytes: int | None = None) -> sqlite3.Connection:
             if existing:
                 raise ValueError('Unversioned database is not an empty compact store')
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 1:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 2:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 3:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 4:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 5:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 6:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + ENVIRONMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
+                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
+            )
+        elif version == 7:
+            connection.executescript(
+                'BEGIN IMMEDIATE;\n' + VESSEL_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version != SCHEMA_VERSION:
@@ -402,6 +436,7 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
             if available:
                 connection.execute('INSERT OR IGNORE INTO source_file VALUES (?, ?)',
                                    (source_date, source['sha256']))
+        vessel_names = {}
         for result in port_results:
             port = result['port']
             if '_staged_path' in result:
@@ -457,10 +492,17 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                 source = sources.get(source_date)
                 if not source or not source['available']:
                     raise ValueError(f'Track sample refers to unavailable source {source_date}')
+                name_key = (sample['mmsi'], sample['name'])
+                if name_key not in vessel_names:
+                    connection.execute('INSERT OR IGNORE INTO vessel_name (mmsi, name) VALUES (?, ?)',
+                                       name_key)
+                    vessel_names[name_key] = connection.execute(
+                        'SELECT name_id FROM vessel_name WHERE mmsi=? AND name=?', name_key,
+                    ).fetchone()[0]
                 connection.execute(
                     'INSERT OR IGNORE INTO track_sample VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (port, source_date, source['sha256'], sample['mmsi'], sample['tick'],
-                     sample['longitude'], sample['latitude'], sample['name'],
+                     sample['longitude'], sample['latitude'], vessel_names[name_key],
                      int(sample['anchored'])),
                 )
             for event in result.get('encounters', ()):
@@ -544,15 +586,16 @@ def replay_tracks(connection: sqlite3.Connection, day: date, port: str,
     if event is None:
         raise KeyError(event_id)
     rows = connection.execute("""
-        SELECT DISTINCT t.mmsi, t.tick, t.longitude, t.latitude, t.name, t.anchored
+        SELECT DISTINCT t.mmsi, t.tick, t.longitude, t.latitude, n.name, t.anchored
         FROM encounter_vessel AS v
         JOIN track_sample AS t ON t.port = v.port AND t.mmsi = v.mmsi
+        JOIN vessel_name AS n ON n.name_id = t.name_id
         JOIN ais_source AS s ON s.ais_date = v.ais_date
              AND s.source_date = t.source_date AND s.sha256 = t.sha256
              AND s.available = 1
         WHERE v.ais_date = ? AND v.port = ? AND v.encounter_id = ?
           AND t.tick BETWEEN ? AND ?
-        ORDER BY t.mmsi, t.tick, t.longitude, t.latitude, t.name, t.anchored
+        ORDER BY t.mmsi, t.tick, t.longitude, t.latitude, n.name, t.anchored
     """, (day_text, port, event_id, *event))
     tracks = {}
     for mmsi, tick, longitude, latitude, name, anchored in rows:
