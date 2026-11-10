@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE study_day (
@@ -126,6 +126,18 @@ CREATE TABLE environment_source (
 ) WITHOUT ROWID;
 """
 
+MEASUREMENT_SCHEMA = """
+CREATE TABLE storage_measurement (
+    ais_date TEXT PRIMARY KEY REFERENCES study_day(ais_date),
+    retained_before INTEGER NOT NULL,
+    retained_after INTEGER NOT NULL,
+    work_scratch_sampled_peak INTEGER NOT NULL,
+    report_scratch_sampled_peak INTEGER NOT NULL,
+    cache_body_peak INTEGER NOT NULL,
+    sample_interval_seconds REAL NOT NULL
+) WITHOUT ROWID;
+"""
+
 
 def open_writer(path: Path) -> sqlite3.Connection:
     """Open or create a versioned database with durable single-writer settings."""
@@ -142,17 +154,22 @@ def open_writer(path: Path) -> sqlite3.Connection:
             if existing:
                 raise ValueError('Unversioned database is not an empty compact store')
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA
+                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 1:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA
+                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 2:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA
+                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA + MEASUREMENT_SCHEMA
+                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
+            )
+        elif version == 3:
+            connection.executescript(
+                'BEGIN IMMEDIATE;\n' + MEASUREMENT_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version != SCHEMA_VERSION:
@@ -167,6 +184,21 @@ def completed_dates(connection: sqlite3.Connection) -> set[date]:
     """Return only dates committed to the store."""
     return {date.fromisoformat(row[0]) for row in
             connection.execute('SELECT ais_date FROM study_day')}
+
+
+def record_measurement(connection: sqlite3.Connection, day: date, retained_before: int,
+                       non_database_bytes: int, work_peak: int, report_peak: int,
+                       cache_peak: int, sample_interval: float) -> None:
+    """Record post-publication storage and sampled scratch high-water marks."""
+    with connection:
+        connection.execute(
+            'INSERT INTO storage_measurement VALUES (?, ?, 0, ?, ?, ?, ?)',
+            (day.isoformat(), retained_before, work_peak, report_peak, cache_peak, sample_interval),
+        )
+        pages = connection.execute('PRAGMA page_count').fetchone()[0]
+        page_size = connection.execute('PRAGMA page_size').fetchone()[0]
+        connection.execute('UPDATE storage_measurement SET retained_after=? WHERE ais_date=?',
+                           (pages * page_size + non_database_bytes, day.isoformat()))
 
 
 def encounter_id(day: date, port: str, mmsi_a: str, mmsi_b: str,

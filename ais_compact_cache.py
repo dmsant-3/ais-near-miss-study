@@ -19,6 +19,11 @@ class CompactCache:
         root.mkdir(parents=True, exist_ok=True)
         scratch.mkdir(parents=True, exist_ok=True)
         self._evict(0)
+        self.high_water_bytes = self._body_size()
+
+    def _body_size(self) -> int:
+        return sum(path.stat().st_size for path in self.root.iterdir()
+                   if path.is_file() and not path.name.endswith('.json'))
 
     def _evict(self, required: int) -> None:
         bodies = [path for path in self.root.iterdir()
@@ -52,4 +57,5 @@ class CompactCache:
         self._evict(info['bytes'])
         temporary.replace(target)
         temporary.with_suffix('.download.json').replace(manifest)
+        self.high_water_bytes = max(self.high_water_bytes, self._body_size())
         return target, info

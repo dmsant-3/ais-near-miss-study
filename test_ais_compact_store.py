@@ -132,7 +132,16 @@ class CompactStoreTests(unittest.TestCase):
             ''')
         with closing(store.open_writer(old)) as upgraded:
             self.assertEqual(store.completed_dates(upgraded), {date(2020, 1, 1)})
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 3)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 4)
+
+    def test_v3_database_adds_measurements(self):
+        old = Path(self.directory.name) / 'v3.sqlite'
+        with closing(sqlite3.connect(old)) as connection:
+            connection.executescript(store.SCHEMA + store.REPLAY_SCHEMA + store.HOURLY_SCHEMA
+                                     + 'PRAGMA user_version = 3;')
+        with closing(store.open_writer(old)) as upgraded:
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 4)
+            self.assertEqual(upgraded.execute('SELECT count(*) FROM storage_measurement').fetchone()[0], 0)
 
     def test_hourly_values_preserve_zero_missing_and_rollback(self):
         self.results[0]['traffic_hourly'] = [{'hour': 100, 'unique_moving': 0, 'unique_anchored': 2}]

@@ -77,6 +77,11 @@ class CompactRunnerTests(unittest.TestCase):
             try:
                 self.assertEqual(ais_compact_store.completed_dates(connection), {day})
                 self.assertEqual(connection.execute('SELECT count(*) FROM port_day').fetchone()[0], 3)
+                measurement = connection.execute(
+                    'SELECT retained_before, retained_after, work_scratch_sampled_peak '
+                    'FROM storage_measurement').fetchone()
+                self.assertGreaterEqual(measurement[1], measurement[0])
+                self.assertGreater(measurement[2], 0)
             finally:
                 connection.close()
 

@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
@@ -287,6 +288,47 @@ def compact_size(report_dir: Path) -> int:
     return sum(path.stat().st_size for path in report_dir.rglob('*') if path.is_file())
 
 
+class ScratchMeter:
+    """Sample attempt files and the SQLite journal until publication completes."""
+    interval = 1.0
+
+    def __init__(self, work_dir: Path, database: Path):
+        self.work_dir = work_dir
+        self.journal = Path(str(database) + '-journal')
+        self.work_peak = 0
+        self.report_peak = 0
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._monitor, daemon=True)
+
+    def sample(self):
+        total = 0
+        for path in self.work_dir.rglob('*'):
+            try:
+                if path.is_file():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+        self.work_peak = max(self.work_peak, total)
+        try:
+            self.report_peak = max(self.report_peak, self.journal.stat().st_size)
+        except OSError:
+            pass
+
+    def _monitor(self):
+        while not self.stopped.wait(self.interval):
+            self.sample()
+
+    def __enter__(self):
+        self.sample()
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stopped.set()
+        self.thread.join()
+        self.sample()
+
+
 @contextlib.contextmanager
 def compact_status(report_dir: Path):
     """Publish a bounded latest-run outcome while the report lock is held."""
@@ -381,8 +423,11 @@ def run_compact(args) -> int:
                     raise OSError('Insufficient free space for configured scratch reserves')
                 if compact_size(args.report_dir) >= args.retained_limit_bytes:
                     raise OSError('Compact retained-output limit reached')
-                with tempfile.TemporaryDirectory(prefix='ais_compact_', dir=args.work_dir) as name:
+                retained_before = compact_size(args.report_dir)
+                with tempfile.TemporaryDirectory(prefix='ais_compact_', dir=args.work_dir) as name, \
+                     contextlib.ExitStack() as resources:
                     temp = Path(name)
+                    meter = resources.enter_context(ScratchMeter(temp, db_path))
                     cache_key = hashlib.sha256(
                         str(args.report_dir).encode('utf-8')).hexdigest()
                     cache = CompactCache(args.work_dir / 'compact_cache' / cache_key,
@@ -423,6 +468,11 @@ def run_compact(args) -> int:
                         raise OSError('Compact retained-output limit reached')
                     db.execute(f'PRAGMA max_page_count = {max_pages}')
                     ais_compact_store.publish_day(db, day, sources, results, PORTS, scoring_version)
+                    meter.sample()
+                    non_database = compact_size(args.report_dir) - db_path.stat().st_size
+                    ais_compact_store.record_measurement(
+                        db, day, retained_before, non_database, meter.work_peak,
+                        meter.report_peak, cache.high_water_bytes, meter.interval)
                     write_status('running', completed_dates=len(ais_compact_store.completed_dates(db)),
                                  latest_date=day.isoformat())
                 if index + 1 < len(pending) and args.pause_seconds:

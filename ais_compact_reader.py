@@ -27,7 +27,20 @@ def progress(connection: sqlite3.Connection) -> dict:
         'SELECT ais_date, port, potential_events, likely_for_human_review '
         'FROM port_day ORDER BY ais_date DESC, port'
     )
-    return {'ports': [dict(row) for row in rows]}
+    ports = [dict(row) for row in rows]
+    measurements = [dict(row) for row in connection.execute(
+        'SELECT * FROM storage_measurement ORDER BY ais_date')]
+    projections = None
+    if measurements:
+        growth = [max(0, row['retained_after'] - row['retained_before']) for row in measurements]
+        latest = max(row['retained_after'] for row in measurements)
+        remaining = max(0, 30 - len(measurements))
+        projections = {
+            'measured_dates': len(measurements),
+            'average_30_dates_bytes': round(latest + sum(growth) / len(growth) * remaining),
+            'busiest_30_dates_bytes': latest + max(growth) * remaining,
+        }
+    return {'ports': ports, 'storage_measurements': measurements, 'projection': projections}
 
 
 def encounters(connection: sqlite3.Connection, day: date, port: str,

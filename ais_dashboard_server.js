@@ -217,9 +217,14 @@ http.createServer(async (req, res) => {
                 const missing = data.status?.missing_count ? '<p>' +
                     Number(data.status.missing_count) + ' dates absent from the NOAA index. First dates: ' +
                     data.status.missing_dates.map(escapeHtml).join(', ') + '</p>' : '';
+                const metrics = data.projection ? '<p>Projected retained output for 30 dates: ' +
+                    (data.projection.average_30_dates_bytes / 1e9).toFixed(2) + ' GB using average growth, ' +
+                    (data.projection.busiest_30_dates_bytes / 1e9).toFixed(2) +
+                    ' GB using the busiest measured date. Measurements cover ' +
+                    data.projection.measured_dates + ' dates.</p>' : '';
                 res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>AIS progress</title><h1>AIS progress</h1><p>' +
                     data.completed_days + ' completed AIS dates of ' + Number(data.config.study_days) +
-                    '</p>' + status + missing + '<ul>' + links.join('') + '</ul>' + theme);
+                    '</p>' + status + missing + metrics + '<ul>' + links.join('') + '</ul>' + theme);
             }
             return;
         }
