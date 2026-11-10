@@ -288,6 +288,24 @@ def compact_size(report_dir: Path) -> int:
     return sum(path.stat().st_size for path in report_dir.rglob('*') if path.is_file())
 
 
+def cleanup_compact_attempts(work_dir: Path, report_dir: Path, cache_key: str) -> None:
+    """Remove abandoned attempts that identify this exact compact report."""
+    prefix = f'ais_compact_{cache_key[:16]}_'
+    expected_parent = work_dir.resolve()
+    for candidate in work_dir.iterdir():
+        if not candidate.name.startswith(prefix) or candidate.is_symlink() or not candidate.is_dir():
+            continue
+        if candidate.resolve().parent != expected_parent:
+            continue
+        marker = candidate / '.compact_attempt.json'
+        try:
+            data = json.loads(marker.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if data == {'report_dir': str(report_dir), 'cache_key': cache_key}:
+            shutil.rmtree(candidate)
+
+
 class ScratchMeter:
     """Sample attempt files and the SQLite journal until publication completes."""
     interval = 1.0
@@ -389,6 +407,8 @@ def run_compact(args) -> int:
             temp.write_text(json.dumps(config, indent=2) + '\n', encoding='utf-8')
             publish_report(temp, config_path)
         db_path = args.report_dir / 'study.sqlite'
+        cache_key = hashlib.sha256(str(args.report_dir).encode('utf-8')).hexdigest()
+        cleanup_compact_attempts(args.work_dir, args.report_dir, cache_key)
         db = ais_compact_store.open_writer(db_path)
         try:
             links = available_days(args.start_date, args.end_date,
@@ -424,12 +444,14 @@ def run_compact(args) -> int:
                 if compact_size(args.report_dir) >= args.retained_limit_bytes:
                     raise OSError('Compact retained-output limit reached')
                 retained_before = compact_size(args.report_dir)
-                with tempfile.TemporaryDirectory(prefix='ais_compact_', dir=args.work_dir) as name, \
+                with tempfile.TemporaryDirectory(prefix=f'ais_compact_{cache_key[:16]}_',
+                                                 dir=args.work_dir) as name, \
                      contextlib.ExitStack() as resources:
                     temp = Path(name)
+                    (temp / '.compact_attempt.json').write_text(
+                        json.dumps({'report_dir': str(args.report_dir), 'cache_key': cache_key}),
+                        encoding='utf-8')
                     meter = resources.enter_context(ScratchMeter(temp, db_path))
-                    cache_key = hashlib.sha256(
-                        str(args.report_dir).encode('utf-8')).hexdigest()
                     cache = CompactCache(args.work_dir / 'compact_cache' / cache_key,
                                          temp / 'cache', args.cache_limit_bytes, work_reserve)
                     sources = {}

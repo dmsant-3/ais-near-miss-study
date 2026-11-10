@@ -3,8 +3,10 @@ from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from collections import defaultdict, namedtuple
+from contextlib import closing
 import json
 import csv
+import hashlib
 import unittest
 from unittest.mock import patch
 
@@ -13,6 +15,27 @@ import run_historical_near_miss_study as runner
 
 
 class CompactRunnerTests(unittest.TestCase):
+    def test_crash_cleanup_only_removes_marked_attempts_for_same_report(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            work, report = root / 'work', root / 'report'
+            work.mkdir()
+            report.mkdir()
+            key = hashlib.sha256(str(report).encode('utf-8')).hexdigest()
+            own = work / f'ais_compact_{key[:16]}_old'
+            other = work / f'ais_compact_{key[:16]}_other'
+            unmarked = work / f'ais_compact_{key[:16]}_unmarked'
+            for folder in (own, other, unmarked):
+                folder.mkdir()
+            (own / '.compact_attempt.json').write_text(
+                json.dumps({'report_dir': str(report), 'cache_key': key}), encoding='utf-8')
+            (other / '.compact_attempt.json').write_text(
+                json.dumps({'report_dir': 'another report', 'cache_key': key}), encoding='utf-8')
+            runner.cleanup_compact_attempts(work, report, key)
+            self.assertFalse(own.exists())
+            self.assertTrue(other.exists())
+            self.assertTrue(unmarked.exists())
+
     def test_compact_retains_review_candidates_without_replays(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -107,6 +130,32 @@ class CompactRunnerTests(unittest.TestCase):
             status = json.loads((root / 'report' / 'run_status.json').read_text(encoding='utf-8'))
             self.assertEqual(status['state'], 'failed')
             self.assertIn('Insufficient free space', status['message'])
+
+    def test_restart_after_commit_before_measurement_does_not_duplicate(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            day = date(2020, 1, 2)
+            args = ['--output-format', 'compact', '--start-date', str(day), '--end-date', str(day),
+                    '--report-dir', str(root / 'report'), '--work-dir', str(root / 'work'),
+                    '--work-reserve-bytes', '1', '--report-reserve-bytes', '1', '--pause-seconds', '0']
+            def download(url, target, reserve):
+                target.write_bytes(b'ais')
+                return {'source_url': url, 'sha256': 'fixture', 'compressed_bytes': 3}
+            def analyze(day, port, bbox, ais, staging, node, adjacent, **kwargs):
+                return {'port': port, 'potential_events': 0, 'likely_for_human_review': 0,
+                        'elevated_priority_candidates': 0, 'lower_priority_candidates': 0,
+                        'detector_quality': {}}
+            with patch.object(runner, 'available_days', return_value={day: 'https://example.test/ais'}), \
+                 patch.object(runner, 'download', side_effect=download) as downloader, \
+                 patch.object(runner, 'analyze_port', side_effect=analyze), \
+                 patch.object(runner.ais_compact_store, 'record_measurement', side_effect=OSError('interrupted')):
+                with self.assertRaisesRegex(OSError, 'interrupted'):
+                    runner.main(args)
+                self.assertEqual(runner.main(args), 0)
+                self.assertEqual(downloader.call_count, 1)
+            with closing(ais_compact_store.open_writer(root / 'report' / 'study.sqlite')) as db:
+                self.assertEqual(ais_compact_store.completed_dates(db), {day})
+                self.assertEqual(db.execute('SELECT count(*) FROM port_day').fetchone()[0], 3)
 
 
 if __name__ == '__main__':
