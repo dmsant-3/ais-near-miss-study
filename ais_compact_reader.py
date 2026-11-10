@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 import sys
 
-from ais_compact_store import SCHEMA_VERSION, replay_tracks
+from ais_compact_store import SCHEMA_VERSION, encounter_details, replay_tracks
 
 
 def open_reader(path: Path) -> sqlite3.Connection:
@@ -61,19 +61,18 @@ def encounters(connection: sqlite3.Connection, day: date, port: str,
                 isinstance(part, str) for part in position):
             raise ValueError('Invalid encounter cursor')
     rows = connection.execute("""
-        SELECT encounter_id, details_json,
+        SELECT ais_date, port, encounter_id, details_json, reasons_present,
                COALESCE(json_extract(details_json, '$.distance_time_utc'), '') AS closest
         FROM encounter
         WHERE ais_date = ? AND port = ?
-          AND (CAST(json_extract(details_json, '$.likely_near_miss_score_7') AS INTEGER) = 7
-               OR CAST(json_extract(details_json, '$.likely_near_miss_score_8') AS INTEGER) = 8)
+          AND (score_7 = 7 OR score_8 = 8)
           AND COALESCE(json_extract(details_json, '$._compact_replay'), 1) = 1
           AND (closest, encounter_id) > (?, ?)
         ORDER BY closest, encounter_id LIMIT ?
     """, (day_text, port, *position, limit + 1)).fetchall()
     result = []
     for row in rows[:limit]:
-        details = json.loads(row['details_json'])
+        details = encounter_details(connection, row)
         details['encounter_id'] = row['encounter_id']
         result.append(details)
     next_cursor = None
@@ -85,13 +84,13 @@ def encounters(connection: sqlite3.Connection, day: date, port: str,
 
 def replay(connection: sqlite3.Connection, day: date, port: str, event_id: str) -> dict:
     row = connection.execute(
-        'SELECT details_json, window_start, window_end FROM encounter '
+        'SELECT ais_date, port, encounter_id, details_json, reasons_present, window_start, window_end FROM encounter '
         'WHERE ais_date=? AND port=? AND encounter_id=?',
         (day.isoformat(), port, event_id),
     ).fetchone()
     if row is None:
         raise KeyError(event_id)
-    event = json.loads(row['details_json'])
+    event = encounter_details(connection, row)
     event['tracks'] = replay_tracks(connection, day, port, event_id)
     event['window_start_utc'] = datetime.fromtimestamp(
         row['window_start'], timezone.utc).isoformat()
@@ -256,7 +255,7 @@ def export_csv(connection: sqlite3.Connection, kind: str, day: date, port: str |
         writer = csv.DictWriter(output, fieldnames=REPORT_FIELDS, extrasaction='ignore')
         writer.writeheader()
         for row in encounter_rows():
-            detail = json.loads(row['details_json'])
+            detail = encounter_details(connection, row)
             label = detail.get('likely_near_miss_classification', '')
             if (label in ('separate_tugboat_review', 'excluded_tugboat', 'excluded_barge_or_tug')
                     or detail.get('involves_tugboat', '').lower() == 'true'):
@@ -273,7 +272,7 @@ def export_csv(connection: sqlite3.Connection, kind: str, day: date, port: str |
     writer = csv.writer(output)
     writer.writerow(fields)
     for row in encounter_rows():
-        detail = json.loads(row['details_json'])
+        detail = encounter_details(connection, row)
         if detail.get('_compact_replay') is False:
             continue
         tracks = replay_tracks(connection, day, row['port'], row['encounter_id'])

@@ -132,7 +132,7 @@ class CompactStoreTests(unittest.TestCase):
             ''')
         with closing(store.open_writer(old)) as upgraded:
             self.assertEqual(store.completed_dates(upgraded), {date(2020, 1, 1)})
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 4)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 5)
 
     def test_v3_database_adds_measurements(self):
         old = Path(self.directory.name) / 'v3.sqlite'
@@ -140,8 +140,25 @@ class CompactStoreTests(unittest.TestCase):
             connection.executescript(store.SCHEMA + store.REPLAY_SCHEMA + store.HOURLY_SCHEMA
                                      + 'PRAGMA user_version = 3;')
         with closing(store.open_writer(old)) as upgraded:
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 4)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 5)
             self.assertEqual(upgraded.execute('SELECT count(*) FROM storage_measurement').fetchone()[0], 0)
+
+    def test_v4_database_keeps_legacy_evidence_during_upgrade(self):
+        old = Path(self.directory.name) / 'v4.sqlite'
+        with closing(sqlite3.connect(old)) as connection:
+            connection.executescript(store.SCHEMA + store.REPLAY_SCHEMA + store.HOURLY_SCHEMA
+                                     + store.MEASUREMENT_SCHEMA + """
+                INSERT INTO study_day VALUES ('2020-01-02', 'now', 'old');
+                INSERT INTO port_day VALUES ('2020-01-02', 'NY', 1, 1, 0, 0, '{}', '[]');
+                INSERT INTO encounter VALUES ('2020-01-02', 'NY', 'id', '1', '2', '2020-01-02T00:00:00Z',
+                    0, 1, '{"likely_near_miss_score_8":"8","likely_near_miss_evidence":"old reason"}');
+                PRAGMA user_version = 4;
+            """)
+        with closing(store.open_writer(old)) as upgraded:
+            upgraded.row_factory = sqlite3.Row
+            row = upgraded.execute('SELECT * FROM encounter').fetchone()
+            self.assertEqual(row['score_8'], 8)
+            self.assertEqual(store.encounter_details(upgraded, row)['likely_near_miss_evidence'], 'old reason')
 
     def test_hourly_values_preserve_zero_missing_and_rollback(self):
         self.results[0]['traffic_hourly'] = [{'hour': 100, 'unique_moving': 0, 'unique_anchored': 2}]
@@ -167,9 +184,11 @@ class CompactStoreTests(unittest.TestCase):
                 'vessels': [{'mmsi': '111', 'role': 'involved'}]}
         self.results[0]['encounters'] = [
             dict(base, first_flag_utc='2020-01-02T00:00:00Z',
-                 details={'likely_near_miss_score_8': '8', 'distance_time_utc': '2020-01-02T00:01:00Z'}),
+                 details={'likely_near_miss_score_8': '8', 'distance_time_utc': '2020-01-02T00:01:00Z',
+                          'likely_near_miss_evidence': 'close pass; maneuver'}),
             dict(base, first_flag_utc='2020-01-02T00:02:00Z',
-                 details={'likely_near_miss_score_8': '8', 'distance_time_utc': '2020-01-02T00:03:00Z'}),
+                 details={'likely_near_miss_score_8': '8', 'distance_time_utc': '2020-01-02T00:03:00Z',
+                          'likely_near_miss_evidence': 'close pass; maneuver'}),
             dict(base, first_flag_utc='2020-01-02T00:04:00Z',
                  details={'likely_near_miss_score_8': '6', 'distance_time_utc': '2020-01-02T00:05:00Z'}),
         ]
@@ -181,6 +200,8 @@ class CompactStoreTests(unittest.TestCase):
             first = reader.encounters(db, self.day, 'NY', 1)
             second = reader.encounters(db, self.day, 'NY', 1, first['next_cursor'])
             self.assertEqual(len(first['encounters']), 1)
+            self.assertEqual(first['encounters'][0]['likely_near_miss_evidence'], 'close pass; maneuver')
+            self.assertEqual(db.execute('SELECT count(*) FROM score_reason').fetchone()[0], 2)
             self.assertIsNone(second['next_cursor'])
             self.assertNotEqual(first['encounters'][0]['encounter_id'],
                                 second['encounters'][0]['encounter_id'])

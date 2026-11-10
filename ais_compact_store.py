@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE study_day (
@@ -138,6 +138,34 @@ CREATE TABLE storage_measurement (
 ) WITHOUT ROWID;
 """
 
+EVIDENCE_SCHEMA = """
+ALTER TABLE encounter ADD COLUMN score_7 INTEGER;
+ALTER TABLE encounter ADD COLUMN score_8 INTEGER;
+ALTER TABLE encounter ADD COLUMN classification TEXT;
+ALTER TABLE encounter ADD COLUMN closest_tick REAL;
+ALTER TABLE encounter ADD COLUMN reasons_present INTEGER NOT NULL DEFAULT 0;
+UPDATE encounter SET
+    score_7 = CAST(NULLIF(json_extract(details_json, '$.likely_near_miss_score_7'), '') AS INTEGER),
+    score_8 = CAST(NULLIF(json_extract(details_json, '$.likely_near_miss_score_8'), '') AS INTEGER),
+    classification = json_extract(details_json, '$.likely_near_miss_classification'),
+    closest_tick = CAST(strftime('%s', json_extract(details_json, '$.distance_time_utc')) AS REAL);
+CREATE INDEX encounter_listing ON encounter(ais_date, port, closest_tick, encounter_id);
+CREATE TABLE score_reason (
+    reason_id INTEGER PRIMARY KEY,
+    description TEXT NOT NULL UNIQUE
+);
+CREATE TABLE encounter_reason (
+    ais_date TEXT NOT NULL,
+    port TEXT NOT NULL,
+    encounter_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    reason_id INTEGER NOT NULL REFERENCES score_reason(reason_id),
+    PRIMARY KEY (ais_date, port, encounter_id, position),
+    FOREIGN KEY (ais_date, port, encounter_id)
+        REFERENCES encounter(ais_date, port, encounter_id)
+) WITHOUT ROWID;
+"""
+
 
 def open_writer(path: Path) -> sqlite3.Connection:
     """Open or create a versioned database with durable single-writer settings."""
@@ -154,22 +182,27 @@ def open_writer(path: Path) -> sqlite3.Connection:
             if existing:
                 raise ValueError('Unversioned database is not an empty compact store')
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 1:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 2:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA + MEASUREMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 3:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + MEASUREMENT_SCHEMA
+                'BEGIN IMMEDIATE;\n' + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA
+                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
+            )
+        elif version == 4:
+            connection.executescript(
+                'BEGIN IMMEDIATE;\n' + EVIDENCE_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version != SCHEMA_VERSION:
@@ -297,12 +330,36 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
             for event in result.get('encounters', ()):
                 event_id = encounter_id(day, port, event['mmsi_a'], event['mmsi_b'],
                                         event['first_flag_utc'])
+                details = dict(event['details'])
+                reasons_present = 'likely_near_miss_evidence' in details
+                evidence = details.pop('likely_near_miss_evidence', '') or ''
+                score_7 = details.get('likely_near_miss_score_7')
+                score_8 = details.get('likely_near_miss_score_8')
+                closest = details.get('distance_time_utc')
+                closest_tick = None
+                if closest:
+                    closest_time = datetime.fromisoformat(closest.replace('Z', '+00:00'))
+                    if closest_time.tzinfo is None:
+                        closest_time = closest_time.replace(tzinfo=timezone.utc)
+                    closest_tick = closest_time.timestamp()
                 connection.execute(
-                    'INSERT INTO encounter VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    'INSERT INTO encounter (ais_date, port, encounter_id, mmsi_a, mmsi_b, '
+                    'first_flag_utc, window_start, window_end, details_json, score_7, score_8, '
+                    'classification, closest_tick, reasons_present) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (day_text, port, event_id, event['mmsi_a'], event['mmsi_b'],
                      event['first_flag_utc'], event['window_start'], event['window_end'],
-                     json.dumps(event['details'], allow_nan=False, sort_keys=True)),
+                     json.dumps(details, allow_nan=False, sort_keys=True),
+                     int(float(score_7)) if score_7 not in (None, '') else None,
+                     int(float(score_8)) if score_8 not in (None, '') else None,
+                     details.get('likely_near_miss_classification'), closest_tick, int(reasons_present)),
                 )
+                for position, reason in enumerate(evidence.split('; ') if evidence else ()):
+                    connection.execute('INSERT OR IGNORE INTO score_reason (description) VALUES (?)',
+                                       (reason,))
+                    reason_id = connection.execute(
+                        'SELECT reason_id FROM score_reason WHERE description=?', (reason,)).fetchone()[0]
+                    connection.execute('INSERT INTO encounter_reason VALUES (?, ?, ?, ?, ?)',
+                                       (day_text, port, event_id, position, reason_id))
                 for vessel in event['vessels']:
                     connection.execute(
                         'INSERT INTO encounter_vessel VALUES (?, ?, ?, ?, ?)',
@@ -314,6 +371,20 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
     except BaseException:
         connection.rollback()
         raise
+
+
+def encounter_details(connection: sqlite3.Connection, row) -> dict:
+    """Expand deduplicated score explanations for display and CSV export."""
+    details = json.loads(row['details_json'])
+    if row['reasons_present']:
+        reasons = connection.execute(
+            'SELECT r.description FROM encounter_reason AS e JOIN score_reason AS r '
+            'ON r.reason_id=e.reason_id WHERE e.ais_date=? AND e.port=? AND e.encounter_id=? '
+            'ORDER BY e.position',
+            (row['ais_date'], row['port'], row['encounter_id']),
+        )
+        details['likely_near_miss_evidence'] = '; '.join(reason[0] for reason in reasons)
+    return details
 
 
 def replay_tracks(connection: sqlite3.Connection, day: date, port: str,
