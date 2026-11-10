@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 import os
+import re
+from urllib.parse import urlsplit
 
 from ais_weather_pipeline import download
 
@@ -38,7 +40,15 @@ class CompactCache:
 
     def fetch(self, url: str):
         """Return a verified body and manifest, retaining it when it fits."""
-        snapshot = datetime.now(timezone.utc).date().isoformat()
+        today = datetime.now(timezone.utc).date()
+        parsed = urlsplit(url)
+        archive = re.fullmatch(r'/data/historical/stdmet/[A-Za-z0-9]+h(\d{4})\.txt\.gz', parsed.path)
+        if (parsed.scheme == 'https' and parsed.hostname == 'www.ndbc.noaa.gov'
+                and not parsed.query and archive and int(archive.group(1)) < today.year - 1):
+            iso = today.isocalendar()
+            snapshot = f'{iso.year}-W{iso.week:02d}'
+        else:
+            snapshot = today.isoformat()
         key = hashlib.sha256(url.encode('utf-8')).hexdigest()
         target = self.root / f'{snapshot}_{key}'
         manifest = target.with_suffix('.download.json')
