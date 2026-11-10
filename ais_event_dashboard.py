@@ -39,11 +39,14 @@ def select_replay_tracks(eligible, tracks):
         yield event, begin, selected
 
 
-def export(day, bbox, ais, folder, scored, node, adjacent=None):
+def collect_replay_tracks(day, bbox, ais, scored, node, adjacent=None,
+                          include_sources=False):
+    """Read AIS and select replay candidates, preserving source dates when requested."""
     west, south, east, north = bbox
     start = timestamp(str(day) + 'T00:00:00')
     traffic = defaultdict(set)
     tracks = defaultdict(list)
+    point_sources = defaultdict(set)
     tugboats = set()
     events = []
     if scored.exists():
@@ -53,15 +56,15 @@ def export(day, bbox, ais, folder, scored, node, adjacent=None):
                     events.append(row)
     windows = [(timestamp(e['first_flag_utc'])-1800,
                 timestamp(e['distance_time_utc'])+600) for e in events]
-    sources = [ais]
+    sources = [(day, ais)]
     if adjacent and windows:
         for offset, needed in ((-1, min(a for a,b in windows) < start),
                                (1, max(b for a,b in windows) >= start+86400)):
             if needed:
                 source = adjacent(day + timedelta(days=offset))
                 if source:
-                    sources.append(source)
-    for source in sources:
+                    sources.append((day + timedelta(days=offset), source))
+    for source_day, source in sources:
         with open_csv(source, node) as stream:
             for raw in csv.DictReader(stream):
                 row = {k.lower().replace('_', ''): v for k, v in raw.items() if k}
@@ -83,17 +86,55 @@ def export(day, bbox, ais, folder, scored, node, adjacent=None):
                 state = 'anchored' if anchored else 'moving' if 1 <= speed < 100 else ''
                 if state and start <= t < start+86400:
                     traffic[int((t-start)//3600), state].add(ship)
-                tracks[ship].append((t, x, y, row.get('vesselname') or ship, anchored))
+                point = (t, x, y, row.get('vesselname') or ship, anchored)
+                tracks[ship].append(point)
+                if include_sources:
+                    point_sources[(ship, point)].add(source_day.isoformat())
     if events and not tracks:
         raise ValueError('Scored encounters exist but no AIS tracks were loaded for the port')
+    eligible = [(event, window) for event, window in zip(events, windows)
+                if not tugboats.intersection((event['mmsi_a'], event['mmsi_b']))]
+    print(f'Excluded {len(events)-len(eligible)} barge or tug encounters from replay', flush=True)
+    return traffic, eligible, tracks, point_sources
+
+
+def compact_replay_records(eligible, tracks, point_sources):
+    """Build store-ready encounter memberships and deduplicated source samples."""
+    encounters = []
+    samples = {}
+    for event, begin, selected in select_replay_tracks(eligible, tracks):
+        vessels = []
+        for ship, points in selected.items():
+            role = 'involved' if ship in (event['mmsi_a'], event['mmsi_b']) else 'anchored_neighbor'
+            vessels.append({'mmsi': ship, 'role': role})
+            for point in points:
+                source_dates = point_sources.get((ship, point))
+                if not source_dates:
+                    raise ValueError('Replay point is missing source provenance')
+                for source_date in source_dates:
+                    tick, lon, lat, name, anchored = point
+                    key = (source_date, ship, *point)
+                    samples[key] = {'source_date': source_date, 'mmsi': ship,
+                                    'tick': tick, 'longitude': lon, 'latitude': lat,
+                                    'name': name, 'anchored': anchored}
+        encounters.append({
+            'mmsi_a': event['mmsi_a'], 'mmsi_b': event['mmsi_b'],
+            'first_flag_utc': event['first_flag_utc'],
+            'window_start': begin, 'window_end': timestamp(event['distance_time_utc']) + 600,
+            'details': dict(event), 'vessels': vessels,
+        })
+    return encounters, list(samples.values())
+
+
+def export(day, bbox, ais, folder, scored, node, adjacent=None):
+    west, south, east, north = bbox
+    start = timestamp(str(day) + 'T00:00:00')
+    traffic, eligible, tracks, _ = collect_replay_tracks(day, bbox, ais, scored, node, adjacent)
     with (folder/'traffic_hourly.csv').open('w', newline='', encoding='utf-8') as stream:
         writer = csv.writer(stream)
         writer.writerow(['window_start_utc', 'unique_moving', 'unique_anchored'])
         for i in range(24):
             writer.writerow([utc(start+i*3600), len(traffic[i,'moving']), len(traffic[i,'anchored'])])
-    eligible = [(event, window) for event, window in zip(events, windows)
-                if not tugboats.intersection((event['mmsi_a'], event['mmsi_b']))]
-    print(f'Excluded {len(events)-len(eligible)} barge or tug encounters from replay', flush=True)
     wind = {}
     try:
         with urlopen(weather_url(day-timedelta(days=1),(west+east)/2,(south+north)/2).replace('end_date='+str(day), 'end_date='+str(day+timedelta(days=1))), timeout=30) as response:
