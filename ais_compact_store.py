@@ -8,10 +8,25 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import sqlite3
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+
+NUMERIC_FIELDS = (
+    'flag_count', 'minimum_flagged_separation_m', 'minimum_dcpa_m',
+    'tcpa_at_minimum_dcpa_s', 'tcpa_at_first_flag_s', 'first_flag_longitude',
+    'first_flag_latitude', 'baseline_course_difference_deg',
+    'observed_min_separation_in_window_m', 'distance_threshold_used_m',
+    'ship_length_a_near_pass_m', 'ship_length_b_near_pass_m',
+    'synchronized_baseline_samples', 'synchronized_encounter_samples',
+    'max_course_change_a_deg', 'max_course_change_b_deg',
+    'max_speed_drop_a_knots', 'max_speed_drop_b_knots',
+)
+FLAG_FIELDS = ('involves_excluded_vessel', 'involves_tugboat',
+               'maneuver_evidence_a', 'maneuver_evidence_b')
+INTEGER_FIELDS = ('flag_count', 'synchronized_baseline_samples', 'synchronized_encounter_samples')
 
 SCHEMA = """
 CREATE TABLE study_day (
@@ -166,11 +181,43 @@ CREATE TABLE encounter_reason (
 ) WITHOUT ROWID;
 """
 
+NUMERIC_SCHEMA = (
+    ''.join(f'ALTER TABLE encounter ADD COLUMN {field} '
+            f'{"INTEGER" if field in INTEGER_FIELDS else "REAL"};\n' for field in NUMERIC_FIELDS)
+    + ''.join(f'ALTER TABLE encounter ADD COLUMN {field} INTEGER;\n' for field in FLAG_FIELDS)
+    + 'UPDATE encounter SET '
+    + ', '.join(f"{field} = compact_number(json_extract(details_json, '$.{field}'))"
+                for field in NUMERIC_FIELDS)
+    + ', '
+    + ', '.join(f"{field} = compact_flag(json_extract(details_json, '$.{field}'))"
+                for field in FLAG_FIELDS)
+    + ';\n'
+)
+
+
+def _number(value):
+    try:
+        number = float(value)
+    except (ValueError, TypeError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _flag(value):
+    text = str(value).strip().lower()
+    if text in ('true', '1', '1.0', 'yes'):
+        return 1
+    if text in ('false', '0', '0.0', 'no'):
+        return 0
+    return None
+
 
 def open_writer(path: Path) -> sqlite3.Connection:
     """Open or create a versioned database with durable single-writer settings."""
     connection = sqlite3.connect(path, timeout=5)
     try:
+        connection.create_function('compact_number', 1, _number)
+        connection.create_function('compact_flag', 1, _flag)
         connection.execute('PRAGMA foreign_keys = ON')
         connection.execute('PRAGMA journal_mode = DELETE')
         connection.execute('PRAGMA synchronous = FULL')
@@ -182,27 +229,32 @@ def open_writer(path: Path) -> sqlite3.Connection:
             if existing:
                 raise ValueError('Unversioned database is not an empty compact store')
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA
+                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 1:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA
+                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 2:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA
+                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 3:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA
+                'BEGIN IMMEDIATE;\n' + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 4:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + EVIDENCE_SCHEMA
+                'BEGIN IMMEDIATE;\n' + EVIDENCE_SCHEMA + NUMERIC_SCHEMA
+                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
+            )
+        elif version == 5:
+            connection.executescript(
+                'BEGIN IMMEDIATE;\n' + NUMERIC_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version != SCHEMA_VERSION:
@@ -352,6 +404,14 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                      int(float(score_7)) if score_7 not in (None, '') else None,
                      int(float(score_8)) if score_8 not in (None, '') else None,
                      details.get('likely_near_miss_classification'), closest_tick, int(reasons_present)),
+                )
+                fields = NUMERIC_FIELDS + FLAG_FIELDS
+                values = ([_number(details.get(field)) for field in NUMERIC_FIELDS]
+                          + [_flag(details.get(field)) for field in FLAG_FIELDS])
+                connection.execute(
+                    'UPDATE encounter SET ' + ', '.join(field + '=?' for field in fields)
+                    + ' WHERE ais_date=? AND port=? AND encounter_id=?',
+                    (*values, day_text, port, event_id),
                 )
                 for position, reason in enumerate(evidence.split('; ') if evidence else ()):
                     connection.execute('INSERT OR IGNORE INTO score_reason (description) VALUES (?)',
