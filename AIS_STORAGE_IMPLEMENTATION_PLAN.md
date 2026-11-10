@@ -7,9 +7,9 @@ The compact path stores 30 AIS dates for the three configured ports. Use decimal
 - The historical runner records the availability, source URL, byte count, and checksum of adjacent AIS files in each new daily summary. An unavailable adjacent date is recorded once per attempt.
 - `ais_compact_store.py` initializes a versioned SQLite database and atomically publishes daily source provenance and three-port summary counts. Its standalone tests cover rollback, retry, duplicate dates, and invalid port sets.
 - The store also accepts encounter membership, deduplicated track samples, hourly traffic, environmental observations and source reports. It reconstructs windowed tracks using the source files available for the study date. Versions 1 and 2 upgrade to version 3. Encounter details currently use JSON.
-- The legacy exporter shares AIS collection and replay-track selection functions, and hourly environmental collection is separate from CSV serialization. A local midnight-crossing fixture exercises collection through SQLite replay. Port analysis can prepare compact records, but the runner does not yet invoke that path or publish the records.
+- The legacy exporter shares AIS collection and replay-track selection functions, and hourly environmental collection is separate from CSV serialization. A local midnight-crossing fixture exercises collection through SQLite replay. The opt-in compact runner collects and transactionally publishes records, enforces a study-date limit, and checks configured disk reserves. It still requires dashboard integration, cache limits, bounded status reporting and representative pilot validation before unattended use.
 - `ais_compact_reader.py` reads port totals, paged visible encounters, and an individual replay from an existing database. Dashboard routing and CSV exports remain to be connected.
-- Compact runner integration, dashboard endpoints, storage limits, cache policy, legacy report migration, and parity checks remain to be implemented. Existing reports lack the new adjacent-source records. The new store is not yet used by the runner.
+- Dashboard endpoints, complete retained-output accounting, cache policy, legacy report migration, and parity checks remain to be implemented. Existing reports lack the new adjacent-source records.
 
 ## Batch entry point and publishing
 

@@ -13,6 +13,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import contextlib
 from html import escape
 import ais_request_policy
 import csv
@@ -32,6 +33,7 @@ from urllib.request import Request
 from ais_request_policy import open_request as urlopen
 
 import count_ais_near_misses as detector
+import ais_compact_store
 from ais_event_dashboard import (collect_hourly_environment, collect_replay_tracks,
                                  collect_wind, compact_replay_records, export)
 
@@ -129,7 +131,7 @@ def available_days(start: date, end: date, index_cache: Path | None = None) -> d
     return dict(sorted(links.items()))
 
 
-def download(url: str, target: Path) -> dict:
+def download(url: str, target: Path, reserve_bytes: int = 0) -> dict:
     """Write one verified daily download, without keeping a second copy."""
     digest = __import__('hashlib').sha256()
     total = 0
@@ -138,10 +140,14 @@ def download(url: str, target: Path) -> dict:
     try:
         with urlopen(Request(url, headers={'User-Agent': USER_AGENT}), timeout=180) as response, part.open('wb') as out:
             expected = response.headers.get('Content-Length')
+            if expected is not None and shutil.disk_usage(target.parent).free < int(expected) + reserve_bytes:
+                raise OSError('Insufficient free space for AIS download and scratch reserve')
             while True:
                 block = response.read(1024 * 1024)
                 if not block:
                     break
+                if shutil.disk_usage(target.parent).free < len(block) + reserve_bytes:
+                    raise OSError('Insufficient free space for AIS download and scratch reserve')
                 out.write(block)
                 digest.update(block)
                 total += len(block)
@@ -221,6 +227,103 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
     result['environment_hourly'], result['environment_sources'] = collect_hourly_environment(
         day, bbox, start, wind)
     return result
+
+
+@contextlib.contextmanager
+def compact_lock(report_dir: Path):
+    """Hold an operating-system file lock for the lifetime of a compact run."""
+    lock = (report_dir / '.compact.lock').open('a+b')
+    try:
+        if sys.platform == 'win32':
+            import msvcrt
+            lock.seek(0)
+            if not lock.read(1):
+                lock.write(b'0')
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        lock.close()
+
+
+def compact_size(report_dir: Path) -> int:
+    return sum(path.stat().st_size for path in report_dir.rglob('*') if path.is_file())
+
+
+def run_compact(args) -> int:
+    """Process compact dates using transactional SQLite publication."""
+    with compact_lock(args.report_dir):
+        config_path = args.report_dir / 'run_config.json'
+        config = {'output_format': 'compact', 'start_date': args.start_date.isoformat(),
+                  'end_date': args.end_date.isoformat(), 'study_days': args.study_days,
+                  'ports': {port: list(bounds) for port, bounds in PORTS.items()}}
+        if config_path.exists():
+            if json.loads(config_path.read_text(encoding='utf-8')) != config:
+                raise ValueError('Compact report configuration differs from the existing run')
+        else:
+            if any(path.name != '.compact.lock' for path in args.report_dir.iterdir()):
+                raise ValueError('Compact runs require an empty report directory')
+            temp = config_path.with_suffix('.part')
+            temp.write_text(json.dumps(config, indent=2) + '\n', encoding='utf-8')
+            publish_report(temp, config_path)
+        db_path = args.report_dir / 'study.sqlite'
+        db = ais_compact_store.open_writer(db_path)
+        try:
+            links = available_days(args.start_date, args.end_date,
+                                   args.work_dir / 'api_state' if args.cron else None)
+            completed = ais_compact_store.completed_dates(db)
+            pending = [(day, url) for day, url in links.items() if day not in completed]
+            pending = pending[:max(0, args.study_days - len(completed))]
+            if args.max_days:
+                pending = pending[:args.max_days]
+            if args.dry_run:
+                for day, url in pending:
+                    print(day, url)
+                return 0
+            for index, (day, url) in enumerate(pending):
+                if (shutil.disk_usage(args.work_dir).free < args.work_reserve_bytes
+                        or shutil.disk_usage(args.report_dir).free < args.report_reserve_bytes):
+                    raise OSError('Insufficient free space for configured scratch reserves')
+                if compact_size(args.report_dir) >= args.retained_limit_bytes:
+                    raise OSError('Compact retained-output limit reached')
+                with tempfile.TemporaryDirectory(prefix='ais_compact_', dir=args.work_dir) as name:
+                    temp = Path(name)
+                    sources = {}
+                    def adjacent(other_day):
+                        key = other_day.isoformat()
+                        if key in sources:
+                            return temp / f'ais-{key}.csv.zst' if sources[key]['available'] else None
+                        other_url = links.get(other_day)
+                        if not other_url:
+                            other_url = available_days(other_day, other_day,
+                                                       args.work_dir / 'api_state' if args.cron else None).get(other_day)
+                        if not other_url:
+                            sources[key] = {'available': False}
+                            return None
+                        target = temp / f'ais-{key}.csv.zst'
+                        sources[key] = {'available': True, **download(other_url, target, args.work_reserve_bytes)}
+                        return target
+                    ais = temp / f'ais-{day.isoformat()}.csv.zst'
+                    sources[day.isoformat()] = {'available': True, **download(url, ais, args.work_reserve_bytes)}
+                    results = [analyze_port(day, port, bbox, ais, temp, args.node, adjacent, compact=True)
+                               for port, bbox in PORTS.items()]
+                    non_database = compact_size(args.report_dir) - db_path.stat().st_size
+                    page_size = db.execute('PRAGMA page_size').fetchone()[0]
+                    max_pages = (args.retained_limit_bytes - non_database) // page_size
+                    current_pages = db.execute('PRAGMA page_count').fetchone()[0]
+                    if max_pages < current_pages:
+                        raise OSError('Compact retained-output limit reached')
+                    db.execute(f'PRAGMA max_page_count = {max_pages}')
+                    ais_compact_store.publish_day(db, day, sources, results, PORTS, 'score-8')
+                if index + 1 < len(pending) and args.pause_seconds:
+                    time.sleep(args.pause_seconds)
+            return 0
+        finally:
+            db.close()
 
 
 def publish_report(temp: Path, target: Path) -> None:
@@ -368,6 +471,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--cron', action='store_true', help='Pace API calls and stop on the first failed day')
     p.add_argument('--request-gap-seconds', type=float, default=5)
     p.add_argument('--node', help='Optional Node.js path when Python zstandard is unavailable')
+    p.add_argument('--output-format', choices=('legacy', 'compact'), default='legacy')
+    p.add_argument('--study-days', type=int, default=30)
+    p.add_argument('--work-reserve-bytes', type=int)
+    p.add_argument('--report-reserve-bytes', type=int)
+    p.add_argument('--retained-limit-bytes', type=int, default=10_000_000_000)
     return p
 
 
@@ -377,6 +485,14 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError('--start-date must be on or before --end-date')
     if args.pause_seconds < 0 or (args.max_days is not None and args.max_days <= 0):
         raise ValueError('--pause-seconds must be nonnegative and --max-days positive')
+    if args.output_format == 'compact':
+        provided = sys.argv[1:] if argv is None else argv
+        if not any(value == '--end-date' or value.startswith('--end-date=') for value in provided):
+            raise ValueError('Compact mode requires an explicit --end-date')
+        if (args.study_days <= 0 or args.work_reserve_bytes is None or args.work_reserve_bytes <= 0
+                or args.report_reserve_bytes is None or args.report_reserve_bytes <= 0
+                or args.retained_limit_bytes <= 0):
+            raise ValueError('Compact study days, reserves, and retained limit must be positive')
     args.report_dir = args.report_dir.resolve()
     args.work_dir = args.work_dir.resolve()
     args.report_dir.mkdir(parents=True, exist_ok=True)
@@ -386,6 +502,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("Request gap must be between 1 and 3600 seconds")
         ais_request_policy.configure(args.work_dir / "api_state", args.request_gap_seconds)
         args.max_days = args.max_days or 1
+    if args.output_format == 'compact':
+        return run_compact(args)
     config_path = args.report_dir / 'run_config.json'
     config = {'start_date': args.start_date.isoformat(), 'end_date': args.end_date.isoformat(),
               'date_span_requested': [args.start_date.isoformat(), args.end_date.isoformat()],
@@ -393,6 +511,8 @@ def main(argv: list[str] | None = None) -> int:
               'screening': {'dcpa_max_m': 926, 'tcpa_max_seconds': 360}}
     if config_path.exists():
         prior = json.loads(config_path.read_text(encoding='utf-8'))
+        if prior.get('output_format') == 'compact':
+            raise ValueError('Choose a legacy report directory for legacy output')
         if prior.get('start_date') != config['start_date'] or (prior.get('end_date') != config['end_date'] and
                 (not args.cron or config['end_date'] < prior.get('end_date', ''))):
             raise ValueError(f'{config_path} belongs to a different date range; choose another --report-dir')
