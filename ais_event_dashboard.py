@@ -126,8 +126,19 @@ def compact_replay_records(eligible, tracks, point_sources):
     return encounters, list(samples.values())
 
 
-def export(day, bbox, ais, folder, scored, node, adjacent=None):
+def collect_wind(day, bbox):
     west, south, east, north = bbox
+    try:
+        url = weather_url(day-timedelta(days=1), (west+east)/2, (south+north)/2)
+        url = url.replace('end_date='+str(day), 'end_date='+str(day+timedelta(days=1)))
+        with urlopen(url, timeout=30) as response:
+            hourly = json.load(response)['hourly']
+        return dict(zip(hourly['time'], zip(hourly['wind_speed_10m'], hourly['wind_direction_10m'])))
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+def export(day, bbox, ais, folder, scored, node, adjacent=None):
     start = timestamp(str(day) + 'T00:00:00')
     traffic, eligible, tracks, _ = collect_replay_tracks(day, bbox, ais, scored, node, adjacent)
     with (folder/'traffic_hourly.csv').open('w', newline='', encoding='utf-8') as stream:
@@ -135,13 +146,7 @@ def export(day, bbox, ais, folder, scored, node, adjacent=None):
         writer.writerow(['window_start_utc', 'unique_moving', 'unique_anchored'])
         for i in range(24):
             writer.writerow([utc(start+i*3600), len(traffic[i,'moving']), len(traffic[i,'anchored'])])
-    wind = {}
-    try:
-        with urlopen(weather_url(day-timedelta(days=1),(west+east)/2,(south+north)/2).replace('end_date='+str(day), 'end_date='+str(day+timedelta(days=1))), timeout=30) as response:
-            hourly = json.load(response)['hourly']
-        wind = dict(zip(hourly['time'], zip(hourly['wind_speed_10m'],hourly['wind_direction_10m'])))
-    except (OSError, ValueError, KeyError):
-        pass
+    wind = collect_wind(day, bbox)
     marine = hourly_environment(day, bbox, start, folder, wind)
     with (folder/'event_trajectories.csv').open('w', newline='', encoding='utf-8-sig') as stream:
         writer = csv.writer(stream)

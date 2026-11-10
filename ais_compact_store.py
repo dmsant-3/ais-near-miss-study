@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE study_day (
@@ -89,6 +89,43 @@ CREATE TABLE encounter_vessel (
 ) WITHOUT ROWID;
 """
 
+HOURLY_SCHEMA = """
+CREATE TABLE traffic_hour (
+    ais_date TEXT NOT NULL,
+    port TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    unique_moving INTEGER NOT NULL CHECK (unique_moving >= 0),
+    unique_anchored INTEGER NOT NULL CHECK (unique_anchored >= 0),
+    PRIMARY KEY (ais_date, port, hour),
+    FOREIGN KEY (ais_date, port) REFERENCES port_day(ais_date, port)
+) WITHOUT ROWID;
+CREATE TABLE environment_hour (
+    ais_date TEXT NOT NULL,
+    port TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    measurement TEXT NOT NULL,
+    station_key TEXT NOT NULL,
+    station_id TEXT,
+    latitude REAL,
+    longitude REAL,
+    observation_utc TEXT,
+    speed_mps REAL,
+    direction_deg REAL,
+    direction_convention TEXT,
+    wave_height_m REAL,
+    current_depth_m REAL,
+    PRIMARY KEY (ais_date, port, hour, measurement, station_key),
+    FOREIGN KEY (ais_date, port) REFERENCES port_day(ais_date, port)
+) WITHOUT ROWID;
+CREATE TABLE environment_source (
+    ais_date TEXT NOT NULL,
+    port TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    PRIMARY KEY (ais_date, port),
+    FOREIGN KEY (ais_date, port) REFERENCES port_day(ais_date, port)
+) WITHOUT ROWID;
+"""
+
 
 def open_writer(path: Path) -> sqlite3.Connection:
     """Open or create a versioned database with durable single-writer settings."""
@@ -105,12 +142,17 @@ def open_writer(path: Path) -> sqlite3.Connection:
             if existing:
                 raise ValueError('Unversioned database is not an empty compact store')
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA
+                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 1:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA
+                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA
+                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
+            )
+        elif version == 2:
+            connection.executescript(
+                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version != SCHEMA_VERSION:
@@ -183,6 +225,27 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                  json.dumps(result['detector_quality'], allow_nan=False, sort_keys=True),
                  json.dumps(port_bounds[port], allow_nan=False)),
             )
+            for row in result.get('traffic_hourly', ()):
+                connection.execute(
+                    'INSERT INTO traffic_hour VALUES (?, ?, ?, ?, ?)',
+                    (day_text, port, row['hour'], row['unique_moving'], row['unique_anchored']),
+                )
+            for hour, rows in result.get('environment_hourly', {}).items():
+                for row in rows:
+                    connection.execute(
+                        'INSERT INTO environment_hour VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        (day_text, port, int(hour), row['measurement'], row.get('station_id') or '',
+                         row.get('station_id'), row.get('latitude'), row.get('longitude'),
+                         row.get('observation_utc'), row.get('speed_mps'), row.get('direction_deg'),
+                         row.get('direction_convention'), row.get('wave_height_m'),
+                         row.get('current_depth_m')),
+                    )
+            if 'environment_sources' in result:
+                connection.execute(
+                    'INSERT INTO environment_source VALUES (?, ?, ?)',
+                    (day_text, port, json.dumps(result['environment_sources'],
+                                               allow_nan=False, sort_keys=True)),
+                )
             for sample in result.get('track_samples', ()):
                 source_date = sample['source_date']
                 source = sources.get(source_date)

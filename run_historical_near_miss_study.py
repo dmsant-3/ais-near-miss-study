@@ -32,7 +32,8 @@ from urllib.request import Request
 from ais_request_policy import open_request as urlopen
 
 import count_ais_near_misses as detector
-from ais_event_dashboard import export
+from ais_event_dashboard import (collect_hourly_environment, collect_replay_tracks,
+                                 collect_wind, compact_replay_records, export)
 
 BASE = 'https://noaaocm.blob.core.windows.net/ais/csv2/'
 USER_AGENT = 'AISNearMissResearch/1.0 (sequential NOAA AIS analysis)'
@@ -163,7 +164,7 @@ def run_command(args: list[str]) -> None:
 
 
 def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
-                 staging: Path, node: str | None, adjacent=None) -> dict:
+                 staging: Path, node: str | None, adjacent=None, compact=False) -> dict:
     port_dir = staging / port
     detected_dir = port_dir / 'detected'
     detected_dir.mkdir(parents=True)
@@ -197,14 +198,29 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
                 classifications[label] = classifications.get(label, 0) + 1
     else:
         classifications = {}
-    export(day, bbox, ais, port_dir, scored, node, adjacent)
-    return {'date': day.isoformat(), 'port': port, 'status': 'complete',
+    result = {'date': day.isoformat(), 'port': port, 'status': 'complete',
             'potential_events': count,
             'likely_for_human_review': classifications.get('likely_near_miss_for_human_review', 0) + classifications.get('elevated_priority_candidate', 0),
             'elevated_priority_candidates': classifications.get('elevated_priority_candidate', 0),
             'lower_priority_candidates': classifications.get('lower_priority_candidate', 0),
             'detector_quality': detection_summary.get('quality', {}),
             'scored_file': scored.name if scored.exists() else None}
+    if not compact:
+        export(day, bbox, ais, port_dir, scored, node, adjacent)
+        return result
+    traffic, eligible, tracks, sources = collect_replay_tracks(
+        day, bbox, ais, scored, node, adjacent, include_sources=True)
+    result['encounters'], result['track_samples'] = compact_replay_records(eligible, tracks, sources)
+    start = detector.timestamp(day.isoformat() + 'T00:00:00')
+    result['traffic_hourly'] = [
+        {'hour': int(start + hour * 3600), 'unique_moving': len(traffic[hour, 'moving']),
+         'unique_anchored': len(traffic[hour, 'anchored'])}
+        for hour in range(24)
+    ]
+    wind = collect_wind(day, bbox)
+    result['environment_hourly'], result['environment_sources'] = collect_hourly_environment(
+        day, bbox, start, wind)
+    return result
 
 
 def publish_report(temp: Path, target: Path) -> None:

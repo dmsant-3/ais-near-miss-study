@@ -131,7 +131,26 @@ class CompactStoreTests(unittest.TestCase):
             ''')
         with closing(store.open_writer(old)) as upgraded:
             self.assertEqual(store.completed_dates(upgraded), {date(2020, 1, 1)})
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 2)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 3)
+
+    def test_hourly_values_preserve_zero_missing_and_rollback(self):
+        self.results[0]['traffic_hourly'] = [{'hour': 100, 'unique_moving': 0, 'unique_anchored': 2}]
+        self.results[0]['environment_hourly'] = {
+            100: [{'measurement': 'modeled_wind', 'speed_mps': 0,
+                   'direction_deg': None, 'direction_convention': 'from'}]}
+        self.results[0]['environment_sources'] = {'missing': ['waves']}
+        self.publish()
+        row = self.db.execute(
+            'SELECT speed_mps, direction_deg FROM environment_hour').fetchone()
+        self.assertEqual(row, (0.0, None))
+        self.assertEqual(self.db.execute(
+            'SELECT unique_moving, unique_anchored FROM traffic_hour').fetchone(), (0, 2))
+
+    def test_invalid_hourly_record_rolls_back_entire_day(self):
+        self.results[0]['traffic_hourly'] = [{'hour': 100, 'unique_moving': -1, 'unique_anchored': 0}]
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.publish()
+        self.assertEqual(store.completed_dates(self.db), set())
 
 
 if __name__ == '__main__':
