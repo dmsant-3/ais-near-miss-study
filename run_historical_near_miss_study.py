@@ -18,6 +18,7 @@ from html import escape
 import ais_request_policy
 import csv
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 from html.parser import HTMLParser
 import json
 from pathlib import Path
@@ -288,16 +289,18 @@ def compact_status(report_dir: Path):
             raise ValueError('Compact runs require a separate report directory')
     elif any(path.name not in ('.compact.lock', 'run_status.json') for path in report_dir.iterdir()):
         raise ValueError('Compact runs require an empty report directory')
-    def write(state, message=''):
+    metadata = {}
+    def write(state, message='', **values):
+        metadata.update(values)
         status = {'state': state, 'updated_utc': datetime.now(timezone.utc).isoformat(),
-                  'message': message[:400]}
+                  'message': message[:400], **metadata}
         target = report_dir / 'run_status.json'
         temporary = target.with_suffix('.part')
         temporary.write_text(json.dumps(status, ensure_ascii=True) + '\n', encoding='utf-8')
         publish_report(temporary, target)
     write('running')
     try:
-        yield
+        yield write
     except BaseException as exc:
         write('failed', f'{type(exc).__name__}: {exc}')
         raise
@@ -307,15 +310,29 @@ def compact_status(report_dir: Path):
 
 def run_compact(args) -> int:
     """Process compact dates using transactional SQLite publication."""
-    with compact_lock(args.report_dir), compact_status(args.report_dir):
+    with compact_lock(args.report_dir), compact_status(args.report_dir) as write_status:
         config_path = args.report_dir / 'run_config.json'
+        scoring_hash = hashlib.sha256()
+        for name in ('count_ais_near_misses.py', 'confirm_near_misses.py',
+                     'rank_likely_near_misses.py'):
+            scoring_hash.update(Path(__file__).with_name(name).read_bytes())
+        scoring_version = scoring_hash.hexdigest()
         config = {'output_format': 'compact', 'start_date': args.start_date.isoformat(),
                   'end_date': args.end_date.isoformat(), 'study_days': args.study_days,
                   'retain_audit_candidates': args.retain_audit_candidates,
+                  'scoring_version': scoring_version,
                   'ports': {port: list(bounds) for port, bounds in PORTS.items()}}
         if config_path.exists():
-            if json.loads(config_path.read_text(encoding='utf-8')) != config:
+            prior = json.loads(config_path.read_text(encoding='utf-8'))
+            migrated = dict(prior)
+            migrated.setdefault('retain_audit_candidates', False)
+            migrated.setdefault('scoring_version', scoring_version)
+            if migrated != config:
                 raise ValueError('Compact report configuration differs from the existing run')
+            if migrated != prior:
+                temporary = config_path.with_suffix('.part')
+                temporary.write_text(json.dumps(migrated, indent=2) + '\n', encoding='utf-8')
+                publish_report(temporary, config_path)
         else:
             if any(path.name not in ('.compact.lock', 'run_status.json') for path in args.report_dir.iterdir()):
                 raise ValueError('Compact runs require an empty report directory')
@@ -328,6 +345,19 @@ def run_compact(args) -> int:
             links = available_days(args.start_date, args.end_date,
                                    args.work_dir / 'api_state' if args.cron else None)
             completed = ais_compact_store.completed_dates(db)
+            missing_count = 0
+            missing_dates = []
+            day = args.start_date
+            while day <= args.end_date:
+                if day not in links:
+                    missing_count += 1
+                    if len(missing_dates) < 25:
+                        missing_dates.append(day.isoformat())
+                if day == args.end_date:
+                    break
+                day += timedelta(days=1)
+            write_status('running', completed_dates=len(completed), missing_count=missing_count,
+                         missing_dates=missing_dates)
             pending = [(day, url) for day, url in links.items() if day not in completed]
             pending = pending[:max(0, args.study_days - len(completed))]
             if args.max_days:
@@ -346,7 +376,7 @@ def run_compact(args) -> int:
                     raise OSError('Compact retained-output limit reached')
                 with tempfile.TemporaryDirectory(prefix='ais_compact_', dir=args.work_dir) as name:
                     temp = Path(name)
-                    cache_key = __import__('hashlib').sha256(
+                    cache_key = hashlib.sha256(
                         str(args.report_dir).encode('utf-8')).hexdigest()
                     cache = CompactCache(args.work_dir / 'compact_cache' / cache_key,
                                          temp / 'cache', args.cache_limit_bytes, work_reserve)
@@ -384,7 +414,9 @@ def run_compact(args) -> int:
                     if max_pages < current_pages:
                         raise OSError('Compact retained-output limit reached')
                     db.execute(f'PRAGMA max_page_count = {max_pages}')
-                    ais_compact_store.publish_day(db, day, sources, results, PORTS, 'score-8')
+                    ais_compact_store.publish_day(db, day, sources, results, PORTS, scoring_version)
+                    write_status('running', completed_dates=len(ais_compact_store.completed_dates(db)),
+                                 latest_date=day.isoformat())
                 if index + 1 < len(pending) and args.pause_seconds:
                     time.sleep(args.pause_seconds)
             return 0

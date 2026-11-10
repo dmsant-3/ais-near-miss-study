@@ -29,6 +29,22 @@ Open [the local dashboard](http://127.0.0.1:8765/) on the machine running Node.j
 
 See the [pipeline guide](AIS_Weather_Pipeline_README.md) for analysis and dashboard usage.
 
+## Compact study output
+
+The compact output mode stores completed dates in SQLite and serves replay data on demand. Choose an explicit study date range and measure scratch requirements on both the work and report volumes before running. The 10 GB retained-output and 2 GB response-cache limits are engineering targets until representative dates have been measured.
+
+```bash
+.venv/bin/python run_historical_near_miss_study.py \
+  --output-format compact --start-date 2016-01-01 --end-date 2016-01-30 \
+  --report-dir historical_compact_report --work-dir ais_cron_work \
+  --work-reserve-bytes "$WORK_RESERVE_BYTES" --report-reserve-bytes "$REPORT_RESERVE_BYTES"
+node ais_dashboard_server.js historical_compact_report
+```
+
+The study stops after 30 available dates by default. Use `--study-days` to set the study limit and `--max-days` to limit one invocation. The compact candidate export includes review-classified candidates and retained replay encounters. Add `--retain-audit-candidates` on the first run to retain other scored rows for audit exports. Use the same settings and report directory when resuming. Set `AIS_PYTHON` to the Python interpreter if the dashboard cannot find `python3`.
+
+For compact cron runs, set `AIS_OUTPUT_FORMAT=compact`, `AIS_END_DATE`, `AIS_WORK_RESERVE_BYTES` and `AIS_REPORT_RESERVE_BYTES` in the cron environment. The wrapper accepts `AIS_START_DATE`, `AIS_STUDY_DAYS`, `AIS_REPORT_DIR` and `AIS_WORK_DIR`. It uses a separate compact report directory by default.
+
 ## Ubuntu cron
 
 Install as a regular user. Push the updated source to GitHub before cloning it on the server. Use Python 3.10 or newer.

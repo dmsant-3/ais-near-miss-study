@@ -2,8 +2,9 @@
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from collections import namedtuple
+from collections import defaultdict, namedtuple
 import json
+import csv
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,34 @@ import run_historical_near_miss_study as runner
 
 
 class CompactRunnerTests(unittest.TestCase):
+    def test_compact_retains_review_candidates_without_replays(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            day = date(2020, 1, 2)
+            event = {'mmsi_a': '1', 'mmsi_b': '2', 'first_flag_utc': '2020-01-02T00:05:00Z',
+                     'distance_time_utc': '', 'likely_near_miss_score_8': '5',
+                     'likely_near_miss_classification': 'elevated_priority_candidate'}
+            def run_command(command):
+                if command[1].endswith('count_ais_near_misses.py'):
+                    detected = Path(command[command.index('--output-dir') + 1])
+                    (detected / 'summary.json').write_text('{"quality": {}}', encoding='utf-8')
+                    (detected / 'potential_near_miss_events.csv').write_text('id\n1\n', encoding='utf-8')
+                elif command[1].endswith('rank_likely_near_misses.py'):
+                    target = Path(command[command.index('--output') + 1])
+                    with target.open('w', encoding='utf-8', newline='') as stream:
+                        writer = csv.DictWriter(stream, fieldnames=list(event))
+                        writer.writeheader()
+                        writer.writerow(event)
+            with patch.object(runner, 'run_command', side_effect=run_command), \
+                 patch.object(runner, 'collect_replay_tracks', return_value=(defaultdict(set), [], {}, {})), \
+                 patch.object(runner, 'collect_wind', return_value={}), \
+                 patch.object(runner, 'collect_hourly_environment', return_value=({}, {})):
+                result = runner.analyze_port(day, 'port', (0, 0, 1, 1), root / 'ais',
+                                             root, None, compact=True)
+            self.assertEqual(result['likely_for_human_review'], 1)
+            self.assertEqual(len(result['encounters']), 1)
+            self.assertFalse(result['encounters'][0]['details']['_compact_replay'])
+
     def test_publishes_all_ports_and_skips_committed_date_on_restart(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -36,8 +65,14 @@ class CompactRunnerTests(unittest.TestCase):
                  patch.object(runner, 'download', side_effect=download) as downloader, \
                  patch.object(runner, 'analyze_port', side_effect=analyze):
                 self.assertEqual(runner.main(args), 0)
+                config_file = report / 'run_config.json'
+                old_config = json.loads(config_file.read_text(encoding='utf-8'))
+                old_config.pop('scoring_version')
+                old_config.pop('retain_audit_candidates')
+                config_file.write_text(json.dumps(old_config), encoding='utf-8')
                 self.assertEqual(runner.main(args), 0)
                 self.assertEqual(downloader.call_count, 1)
+                self.assertIn('scoring_version', json.loads(config_file.read_text(encoding='utf-8')))
             connection = ais_compact_store.open_writer(report / 'study.sqlite')
             try:
                 self.assertEqual(ais_compact_store.completed_dates(connection), {day})

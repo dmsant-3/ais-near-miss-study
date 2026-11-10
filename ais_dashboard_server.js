@@ -210,9 +210,16 @@ http.createServer(async (req, res) => {
                     '<li><a href="/' + row.ais_date + '/' + row.port + '">' +
                     row.ais_date + ' · ' + row.port.replaceAll('_', ' ') + '</a> — ' +
                     row.potential_events + ' screened, ' + row.likely_for_human_review + ' for review</li>');
+                const escapeHtml = value => String(value).replace(/[&<>"']/g, char =>
+                    ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
+                const status = data.status ? '<p>Latest run: ' + escapeHtml(data.status.state) +
+                    (data.status.message ? ' — ' + escapeHtml(data.status.message) : '') + '</p>' : '';
+                const missing = data.status?.missing_count ? '<p>' +
+                    Number(data.status.missing_count) + ' dates absent from the NOAA index. First dates: ' +
+                    data.status.missing_dates.map(escapeHtml).join(', ') + '</p>' : '';
                 res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>AIS progress</title><h1>AIS progress</h1><p>' +
                     data.completed_days + ' completed AIS dates of ' + Number(data.config.study_days) +
-                    '</p><ul>' + links.join('') + '</ul>' + theme);
+                    '</p>' + status + missing + '<ul>' + links.join('') + '</ul>' + theme);
             }
             return;
         }
