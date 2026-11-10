@@ -15,7 +15,7 @@ const ports = ['Port_of_NY_NJ', 'Port_of_LA', 'Port_of_Houston'];
 async function compactReader(action, args = []) {
     const python = process.env.AIS_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
     const result = await execFileAsync(python, [reader, database, action, ...args],
-        { maxBuffer: 64 * 1024 * 1024, timeout: 60000 });
+        { maxBuffer: 64 * 1024 * 1024, timeout: 60000, env: { ...process.env, PYTHONUTF8: '1' } });
     return result.stdout;
 }
 
@@ -47,8 +47,7 @@ canvas{display:block;width:100%;height:auto;background:#f3f8fc;border:1px solid 
 </style>`;
 const playback = `<script>
 const scoreNote = document.createElement('p');
-const topScore = d.events.some(event => 'likely_near_miss_score_7' in event) || document.body.textContent.includes('Scores 6–7') ? 7 : 8;
-scoreNote.textContent = 'All listed encounters scored ' + topScore + ' out of ' + topScore + '.';
+scoreNote.textContent = 'Scores prioritize encounters for human review.';
 sel.before(scoreNote);
 for (const option of sel.options) option.textContent = option.textContent.replace(/ \| score [78] \| /, ' | ');
 const button = document.querySelector('#play') || document.createElement('button');
@@ -209,7 +208,11 @@ http.createServer(async (req, res) => {
                 const links = data.ports.map(row =>
                     '<li><a href="/' + row.ais_date + '/' + row.port + '">' +
                     row.ais_date + ' · ' + row.port.replaceAll('_', ' ') + '</a> — ' +
-                    row.potential_events + ' screened, ' + row.likely_for_human_review + ' for review</li>');
+                    row.potential_events + ' screened, ' + row.likely_for_human_review +
+                    ' for review · <a href="/api/export/daily?date=' + row.ais_date + '&amp;port=' + row.port +
+                    '">daily CSV</a> · <a href="/api/export/candidates?date=' + row.ais_date +
+                    '&amp;port=' + row.port + '">candidates CSV</a> · <a href="/api/export/likely?date=' +
+                    row.ais_date + '&amp;port=' + row.port + '">review CSV</a></li>');
                 const escapeHtml = value => String(value).replace(/[&<>"']/g, char =>
                     ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
                 const status = data.status ? '<p>Latest run: ' + escapeHtml(data.status.state) +
@@ -245,7 +248,8 @@ http.createServer(async (req, res) => {
                 if (port) args.push('--port', port);
                 if (encounter) args.push('--encounter', encounter);
                 const python = process.env.AIS_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
-                const child = spawn(python, args, { windowsHide: true });
+                const child = spawn(python, args,
+                    { windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' } });
                 let stderr = '';
                 let started = false;
                 child.stderr.on('data', chunk => { stderr += chunk.toString().slice(0, 4096); });
@@ -258,7 +262,10 @@ http.createServer(async (req, res) => {
                 child.on('close', code => {
                     if (!started && !res.headersSent) {
                         res.removeHeader('Content-Encoding');
-                        res.writeHead(code ? (stderr.includes('KeyError') ? 404 : 500) : 200).end(code ? 'Export failed' : '');
+                        const status = stderr.includes('KeyError') ? 404 :
+                            stderr.includes('ValueError') ? 400 :
+                            stderr.includes('database is locked') ? 503 : 500;
+                        res.writeHead(code ? status : 200).end(code ? 'Export failed' : '');
                     }
                 });
                 res.on('close', () => { if (!res.writableEnded) child.kill(); });

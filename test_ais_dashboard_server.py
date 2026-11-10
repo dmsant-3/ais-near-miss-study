@@ -72,7 +72,10 @@ class CompactDashboardTests(unittest.TestCase):
                 with urlopen(base + prefix + '/' + events[0]['encounter_id'], timeout=10) as response:
                     self.assertEqual(len(json.load(response)['events']), 1)
                 with urlopen(base + f'/{day}/{port}', timeout=10) as response:
-                    self.assertIn('loadSelected', response.read().decode('utf-8'))
+                    shell = response.read().decode('utf-8')
+                    self.assertIn('loadSelected', shell)
+                    self.assertIn('Score 8 · UTC', shell)
+                    self.assertNotIn('All listed encounters scored 7 out of 7', shell)
                 request = Request(base + f'/api/export/candidates?date={day}&port={port}',
                                   headers={'Accept-Encoding': 'gzip'})
                 with urlopen(request, timeout=10) as response:

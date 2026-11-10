@@ -134,6 +134,7 @@ async function loadSelected() {
  const summary = d.events[selection];
  if (!summary) { draw(); return; }
  const request = ++replayRequest;
+ exportLink.hidden = true;
  details.textContent = 'Loading replay…';
  try {
   const response = await fetch('/api/days/' + encodeURIComponent(aisDay) + '/ports/' +
@@ -146,6 +147,9 @@ async function loadSelected() {
   d.marine = data.marine;
   d.traffic = data.traffic;
   selectEvent();
+  exportLink.href = '/api/export/trajectories?date=' + encodeURIComponent(aisDay) +
+      '&port=' + encodeURIComponent(aisPort) + '&encounter=' + encodeURIComponent(summary.encounter_id);
+  exportLink.hidden = false;
   if (typeof updateShipLegend === 'function') updateShipLegend();
  } catch (error) {
   if (request === replayRequest) details.textContent = error.message;
@@ -178,6 +182,10 @@ more.textContent = 'Load more encounters';
 more.hidden = true;
 more.onclick = loadPage;
 sel.after(more);
+const exportLink = document.createElement('a');
+exportLink.textContent = 'Download selected replay CSV';
+exportLink.hidden = true;
+more.after(exportLink);
 loadPage();
 """
     shell = HTML.replace('DATA_PLACEHOLDER', '{"events":[],"wind":{},"marine":{}}')
@@ -197,12 +205,18 @@ def export_csv(connection: sqlite3.Connection, kind: str, day: date, port: str |
 
     if event_id and not port:
         raise ValueError('A port is required for an encounter export')
+    if event_id and kind == 'daily':
+        raise ValueError('Daily summaries do not accept an encounter ID')
     day_text = day.isoformat()
     if not connection.execute('SELECT 1 FROM study_day WHERE ais_date=?', (day_text,)).fetchone():
         raise KeyError(day_text)
     if port and not connection.execute('SELECT 1 FROM port_day WHERE ais_date=? AND port=?',
                                        (day_text, port)).fetchone():
         raise KeyError(port)
+    if event_id and not connection.execute(
+            'SELECT 1 FROM encounter WHERE ais_date=? AND port=? AND encounter_id=?',
+            (day_text, port, event_id)).fetchone():
+        raise KeyError(event_id)
     params = [day_text]
     where = 'ais_date=?'
     if port:

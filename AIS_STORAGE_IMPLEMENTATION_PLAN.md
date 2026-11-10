@@ -14,7 +14,7 @@ The compact path stores 30 AIS dates for the three configured ports. Use decimal
 - Compact detector databases are created on the configured work volume and limited by the available space above the scratch reserve. Selected replay responses include hourly moving and anchored traffic counts.
 - The cron wrapper accepts explicit compact study dates and measured reserve settings. The compact run configuration records a hash of the detector, confirmation and ranking scripts for reproducibility.
 - The one-date legacy importer validates source metadata, port summaries, hourly traffic and replay tracks before committing. It infers each sample's source date from its UTC timestamp and refuses samples without matching recorded source metadata. Older reports without the required summaries or checksums need the original sources or a separately verified archive.
-- Browser parity checks and a representative 30-date pilot remain outstanding. Short-lived temporary database or journal peaks require system-level measurement on the Ubuntu host. The compact dashboard requires Python 3 on the server path or `AIS_PYTHON`.
+- A browser check compared the existing legacy controls with a compact fixture and verified replay, vessel names, wind, waves, traffic and restart. It exposed and led to fixes for Windows UTF-8 output and the score description. An offline three-date fixture compares legacy and compact replay tracks, including overlapping windows and a midnight crossing. Three-date real-data parity and a representative 30-date pilot remain outstanding. Short-lived temporary database or journal peaks require system-level measurement on the Ubuntu host. The compact dashboard requires Python 3 on the server path or `AIS_PYTHON`.
 
 ## Batch entry point and publishing
 
