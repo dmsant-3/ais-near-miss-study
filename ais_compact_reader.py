@@ -5,6 +5,7 @@ import argparse
 import csv
 from datetime import date, datetime, timezone
 import json
+import math
 from pathlib import Path
 import sqlite3
 import sys
@@ -51,22 +52,24 @@ def encounters(connection: sqlite3.Connection, day: date, port: str,
     if not connection.execute('SELECT 1 FROM port_day WHERE ais_date=? AND port=?',
                               (day_text, port)).fetchone():
         raise KeyError((day_text, port))
-    position = ('', '')
+    position = (-1e20, '')
     if cursor:
         try:
             position = json.loads(cursor)
         except json.JSONDecodeError as exc:
             raise ValueError('Invalid encounter cursor') from exc
-        if not isinstance(position, list) or len(position) != 2 or not all(
-                isinstance(part, str) for part in position):
+        if (not isinstance(position, list) or len(position) != 2
+                or not isinstance(position[0], (int, float)) or isinstance(position[0], bool)
+                or not math.isfinite(position[0]) or not isinstance(position[1], str)):
             raise ValueError('Invalid encounter cursor')
     rows = connection.execute("""
         SELECT ais_date, port, encounter_id, details_json, reasons_present,
-               COALESCE(json_extract(details_json, '$.distance_time_utc'), '') AS closest
+               closest_tick AS closest
         FROM encounter
         WHERE ais_date = ? AND port = ?
           AND (score_7 = 7 OR score_8 = 8)
           AND COALESCE(json_extract(details_json, '$._compact_replay'), 1) = 1
+          AND closest_tick IS NOT NULL
           AND (closest, encounter_id) > (?, ?)
         ORDER BY closest, encounter_id LIMIT ?
     """, (day_text, port, *position, limit + 1)).fetchall()
@@ -166,7 +169,8 @@ async function loadPage() {
   for (const event of page.encounters) {
    const index = d.events.length;
    d.events.push(event);
-   sel.add(new Option(event.distance_time_utc + ' | score ' + event.likely_near_miss_score_8 +
+   const score = Number(event.likely_near_miss_score_8) === 8 ? 8 : event.likely_near_miss_score_7;
+   sel.add(new Option(event.distance_time_utc + ' | score ' + score +
        ' | ' + event.mmsi_a + ' / ' + event.mmsi_b, index));
   }
   pageCursor = page.next_cursor;
@@ -233,6 +237,34 @@ def export_csv(connection: sqlite3.Connection, kind: str, day: date, port: str |
                              'elevated_priority_candidates': row['elevated_priority_candidates'],
                              'lower_priority_candidates': row['lower_priority_candidates']})
         return
+    if kind in ('traffic', 'environment'):
+        if not port or event_id:
+            raise ValueError('Hourly exports require a port and do not accept an encounter ID')
+        day_start = int(datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc).timestamp())
+        if kind == 'traffic':
+            writer = csv.writer(output)
+            writer.writerow(['window_start_utc', 'unique_moving', 'unique_anchored'])
+            rows = connection.execute(
+                'SELECT hour, unique_moving, unique_anchored FROM traffic_hour '
+                'WHERE ais_date=? AND port=? ORDER BY hour', (day_text, port))
+            for row in rows:
+                writer.writerow([datetime.fromtimestamp(row['hour'], timezone.utc).isoformat(),
+                                 row['unique_moving'], row['unique_anchored']])
+        else:
+            fields = ['hour_utc', 'measurement', 'station_id', 'latitude', 'longitude',
+                      'observation_utc', 'speed_mps', 'direction_deg', 'direction_convention',
+                      'wave_height_m', 'current_depth_m']
+            writer = csv.DictWriter(output, fieldnames=fields)
+            writer.writeheader()
+            rows = connection.execute(
+                'SELECT * FROM environment_hour WHERE ais_date=? AND port=? AND hour>=? AND hour<? '
+                'ORDER BY hour, measurement, station_key',
+                (day_text, port, day_start, day_start + 86400))
+            for row in rows:
+                record = {field: row[field] for field in fields if field != 'hour_utc'}
+                record['hour_utc'] = datetime.fromtimestamp(row['hour'], timezone.utc).isoformat()
+                writer.writerow(record)
+        return
     if event_id:
         where += ' AND encounter_id=?'
         params.append(event_id)
@@ -283,8 +315,11 @@ def export_csv(connection: sqlite3.Connection, kind: str, day: date, port: str |
                     "SELECT speed_mps, direction_deg FROM environment_hour WHERE ais_date=? AND port=? "
                     "AND hour=? AND measurement='modeled_wind'",
                     (day_text, row['port'], hour)).fetchone()
+                score = detail.get('likely_near_miss_score_8', '')
+                if row['score_7'] == 7 and row['score_8'] != 8:
+                    score = detail.get('likely_near_miss_score_7', '')
                 writer.writerow([row['encounter_id'], detail['distance_time_utc'],
-                                 detail['likely_near_miss_score_8'], ship, name,
+                                 score, ship, name,
                                  datetime.fromtimestamp(tick, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
                                  lon, lat, 'involved' if ship in (row['mmsi_a'], row['mmsi_b'])
                                  else 'anchored_neighbor', *(wind if wind else ('', ''))])
@@ -299,7 +334,8 @@ def main() -> None:
     parser.add_argument('--limit', type=int, default=50)
     parser.add_argument('--cursor')
     parser.add_argument('--encounter')
-    parser.add_argument('--kind', choices=['daily', 'candidates', 'likely', 'trajectories'])
+    parser.add_argument('--kind', choices=['daily', 'candidates', 'likely', 'trajectories',
+                                           'traffic', 'environment'])
     args = parser.parse_args()
     if args.action not in ('progress', 'shell', 'export') and (not args.date or not args.port):
         parser.error('date and port are required')

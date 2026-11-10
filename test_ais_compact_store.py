@@ -1,7 +1,9 @@
 """Tests for durable, all-port publication in the compact store."""
-from datetime import date
+from datetime import date, datetime, timezone
 from contextlib import closing
 from pathlib import Path
+import csv
+import io
 import sqlite3
 import tempfile
 import unittest
@@ -73,6 +75,26 @@ class CompactStoreTests(unittest.TestCase):
         with self.assertRaises(OSError):
             store.open_writer(self.path, max_bytes=1)
         self.assertEqual(store.completed_dates(self.db), {self.day})
+
+    def test_score_seven_replay_is_listed_and_exported(self):
+        event = {'mmsi_a': '111', 'mmsi_b': '222', 'first_flag_utc': '2020-01-02T00:00:00Z',
+                 'window_start': 90, 'window_end': 120,
+                 'details': {'likely_near_miss_score_7': '7', 'likely_near_miss_score_8': '0',
+                             'distance_time_utc': '2020-01-02T00:01:00Z'},
+                 'vessels': [{'mmsi': '111', 'role': 'involved'}]}
+        self.results[0]['encounters'] = [event]
+        self.results[0]['track_samples'] = [
+            {'source_date': str(self.day), 'mmsi': '111', 'tick': 100, 'longitude': 1,
+             'latitude': 2, 'name': 'Ship', 'anchored': False}]
+        self.publish()
+        with closing(reader.open_reader(self.path)) as db:
+            page = reader.encounters(db, self.day, 'NY')
+            self.assertEqual(len(page['encounters']), 1)
+            output = io.StringIO(newline='')
+            reader.export_csv(db, 'trajectories', self.day, 'NY',
+                              page['encounters'][0]['encounter_id'], output)
+            rows = list(csv.DictReader(io.StringIO(output.getvalue())))
+            self.assertEqual(rows[0]['score'], '7')
 
     def test_replays_share_samples_and_cross_midnight(self):
         self.sources['2020-01-01'] = {
@@ -189,9 +211,10 @@ class CompactStoreTests(unittest.TestCase):
             self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 7)
 
     def test_hourly_values_preserve_zero_missing_and_rollback(self):
-        self.results[0]['traffic_hourly'] = [{'hour': 100, 'unique_moving': 0, 'unique_anchored': 2}]
+        hour = int(datetime(2020, 1, 2, tzinfo=timezone.utc).timestamp())
+        self.results[0]['traffic_hourly'] = [{'hour': hour, 'unique_moving': 0, 'unique_anchored': 2}]
         self.results[0]['environment_hourly'] = {
-            100: [{'measurement': 'modeled_wind', 'speed_mps': 0,
+            hour: [{'measurement': 'modeled_wind', 'speed_mps': 0,
                    'direction_deg': None, 'direction_convention': 'from'}]}
         self.results[0]['environment_sources'] = {'missing': ['waves']}
         self.publish()
@@ -200,6 +223,12 @@ class CompactStoreTests(unittest.TestCase):
         self.assertEqual(row, (0.0, None))
         self.assertEqual(self.db.execute(
             'SELECT unique_moving, unique_anchored FROM traffic_hour').fetchone(), (0, 2))
+        with closing(reader.open_reader(self.path)) as db:
+            for kind, field in (('traffic', 'unique_moving'), ('environment', 'speed_mps')):
+                output = io.StringIO(newline='')
+                reader.export_csv(db, kind, self.day, 'NY', None, output)
+                rows = list(csv.DictReader(io.StringIO(output.getvalue())))
+                self.assertEqual(float(rows[0][field]), 0)
 
     def test_hourly_observations_are_shared_across_dates(self):
         self.results[0]['environment_hourly'] = {

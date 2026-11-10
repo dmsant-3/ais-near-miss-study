@@ -74,7 +74,7 @@ class CompactDashboardTests(unittest.TestCase):
                 with urlopen(base + f'/{day}/{port}', timeout=10) as response:
                     shell = response.read().decode('utf-8')
                     self.assertIn('loadSelected', shell)
-                    self.assertIn('Score 8 · UTC', shell)
+                    self.assertIn('Review scores · UTC', shell)
                     self.assertNotIn('All listed encounters scored 7 out of 7', shell)
                 request = Request(base + f'/api/export/candidates?date={day}&port={port}',
                                   headers={'Accept-Encoding': 'gzip'})

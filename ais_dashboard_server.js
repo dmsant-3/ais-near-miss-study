@@ -212,7 +212,9 @@ http.createServer(async (req, res) => {
                     ' for review · <a href="/api/export/daily?date=' + row.ais_date + '&amp;port=' + row.port +
                     '">daily CSV</a> · <a href="/api/export/candidates?date=' + row.ais_date +
                     '&amp;port=' + row.port + '">candidates CSV</a> · <a href="/api/export/likely?date=' +
-                    row.ais_date + '&amp;port=' + row.port + '">review CSV</a></li>');
+                    row.ais_date + '&amp;port=' + row.port + '">review CSV</a> · <a href="/api/export/traffic?date=' +
+                    row.ais_date + '&amp;port=' + row.port + '">traffic CSV</a> · <a href="/api/export/environment?date=' +
+                    row.ais_date + '&amp;port=' + row.port + '">environment CSV</a></li>');
                 const escapeHtml = value => String(value).replace(/[&<>"']/g, char =>
                     ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
                 const status = data.status ? '<p>Latest run: ' + escapeHtml(data.status.state) +
@@ -232,7 +234,7 @@ http.createServer(async (req, res) => {
             return;
         }
         if (compact && route.startsWith('/api/')) {
-            const exportMatch = /^\/api\/export\/(daily|candidates|likely|trajectories)$/.exec(route);
+            const exportMatch = /^\/api\/export\/(daily|candidates|likely|trajectories|traffic|environment)$/.exec(route);
             if (exportMatch) {
                 const query = new URL(req.url, 'http://localhost').searchParams;
                 const day = query.get('date');
@@ -383,7 +385,7 @@ http.createServer(async (req, res) => {
 `;
         const zoomable = html.replace('c.clearRect(0,0,1000,650);', '$&' + chartBackdrop)
             .replace('c.fillText(p[3]', 'c.save();c.strokeStyle="#f6fbff";c.lineWidth=4;c.lineJoin="round";c.strokeText(p[3]+ " · "+new Date(p[0]*1000).toISOString().slice(11,19),a+33,b);c.restore();c.fillText(p[3]')
-            .replace('c.arc(a,b,4,0,2*Math.PI);c.fill();', 'c.save();c.translate(a,b);const previous=shown.slice(0,-1).findLast(q=>q[1]!==p[1]||q[2]!==p[2]);if(previous&&!p[4]){const [px,py]=xy(previous);c.rotate(Math.atan2(b-py,a-px)+Math.PI/2);}c.moveTo(0,-29);c.quadraticCurveTo(14,-22,15,-8);c.lineTo(13,20);c.quadraticCurveTo(13,25,8,25);c.lineTo(-8,25);c.quadraticCurveTo(-13,25,-13,20);c.lineTo(-15,-8);c.quadraticCurveTo(-14,-22,0,-29);c.closePath();c.fill();c.strokeStyle="#fff";c.lineWidth=3;c.stroke();c.fillStyle="#f8fcff";c.fillRect(-9,-6,18,12);c.fillStyle="#16364d";c.fillRect(-7,-5,14,3);c.fillStyle="#f8fcff";c.fillRect(-6,11,12,8);c.restore();').replace('for(const [i,e] of d.events.entries())', 'd.events = d.events.filter(event => (Number(event.likely_near_miss_score_7) === 7 || Number(event.likely_near_miss_score_8) === 8)); for(const [i,e] of d.events.entries())').replaceAll('Scores 7–8', 'Score 8').replaceAll('score 7–8 encounters', 'score 8 encounters').replace('=>[500+', '=>[500+(window.aisPanX || 0)+').replace(',325-', ',325+(window.aisPanY || 0)-').replaceAll('*280/radius', '*280/radius*(Number(document.querySelector("#site-zoom")?.value)||1)');
+            .replace('c.arc(a,b,4,0,2*Math.PI);c.fill();', 'c.save();c.translate(a,b);const previous=shown.slice(0,-1).findLast(q=>q[1]!==p[1]||q[2]!==p[2]);if(previous&&!p[4]){const [px,py]=xy(previous);c.rotate(Math.atan2(b-py,a-px)+Math.PI/2);}c.moveTo(0,-29);c.quadraticCurveTo(14,-22,15,-8);c.lineTo(13,20);c.quadraticCurveTo(13,25,8,25);c.lineTo(-8,25);c.quadraticCurveTo(-13,25,-13,20);c.lineTo(-15,-8);c.quadraticCurveTo(-14,-22,0,-29);c.closePath();c.fill();c.strokeStyle="#fff";c.lineWidth=3;c.stroke();c.fillStyle="#f8fcff";c.fillRect(-9,-6,18,12);c.fillStyle="#16364d";c.fillRect(-7,-5,14,3);c.fillStyle="#f8fcff";c.fillRect(-6,11,12,8);c.restore();').replace('for(const [i,e] of d.events.entries())', 'd.events = d.events.filter(event => (Number(event.likely_near_miss_score_7) === 7 || Number(event.likely_near_miss_score_8) === 8)); for(const [i,e] of d.events.entries())').replaceAll('Scores 7–8', 'Review scores').replaceAll('score 7–8 encounters', 'review encounters').replace('=>[500+', '=>[500+(window.aisPanX || 0)+').replace(',325-', ',325+(window.aisPanY || 0)-').replaceAll('*280/radius', '*280/radius*(Number(document.querySelector("#site-zoom")?.value)||1)');
         const ruler = `
  const pixelsPerNm = 280 / radius * (Number(document.querySelector("#site-zoom")?.value) || 1) / 60;
  const target = 120 / pixelsPerNm;
