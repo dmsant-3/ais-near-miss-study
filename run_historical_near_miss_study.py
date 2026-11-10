@@ -172,7 +172,7 @@ def run_command(args: list[str]) -> None:
 
 def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
                  staging: Path, node: str | None, adjacent=None, compact=False,
-                 cache_policy=None) -> dict:
+                 cache_policy=None, retain_audit_candidates=False) -> dict:
     port_dir = staging / port
     detected_dir = port_dir / 'detected'
     detected_dir.mkdir(parents=True)
@@ -190,6 +190,7 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
     summary.write_text(json.dumps(detection_summary, indent=2) + '\n', encoding='utf-8')
     count = row_count(events)
     scored = port_dir / 'scored_candidates.csv'
+    scored_rows = []
     if count:
         evidence = port_dir / 'evidence_review.csv'
         confirm = [sys.executable, str(Path(__file__).with_name('confirm_near_misses.py')),
@@ -202,6 +203,8 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
         classifications: dict[str, int] = {}
         with scored.open(encoding='utf-8-sig', newline='') as stream:
             for row in csv.DictReader(stream):
+                if compact:
+                    scored_rows.append(row)
                 label = row.get('likely_near_miss_classification', '')
                 classifications[label] = classifications.get(label, 0) + 1
     else:
@@ -219,6 +222,24 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
     traffic, eligible, tracks, sources = collect_replay_tracks(
         day, bbox, ais, scored, node, adjacent, include_sources=True)
     result['encounters'], result['track_samples'] = compact_replay_records(eligible, tracks, sources)
+    retained = {(event['mmsi_a'], event['mmsi_b'], event['first_flag_utc'])
+                for event in result['encounters']}
+    for row in scored_rows:
+        label = row['likely_near_miss_classification']
+        if not retain_audit_candidates and label not in (
+                'likely_near_miss_for_human_review', 'elevated_priority_candidate'):
+            continue
+        identity = (row['mmsi_a'], row['mmsi_b'], row['first_flag_utc'])
+        if identity in retained:
+            continue
+        begin = int(detector.timestamp(row['first_flag_utc'])) - 1800
+        end = int(detector.timestamp(row['distance_time_utc'])) + 600 if row['distance_time_utc'] else begin
+        result['encounters'].append({
+            'mmsi_a': row['mmsi_a'], 'mmsi_b': row['mmsi_b'],
+            'first_flag_utc': row['first_flag_utc'], 'window_start': begin,
+            'window_end': max(begin, end),
+            'details': {**row, '_compact_replay': False}, 'vessels': [],
+        })
     start = detector.timestamp(day.isoformat() + 'T00:00:00')
     result['traffic_hourly'] = [
         {'hour': int(start + hour * 3600), 'unique_moving': len(traffic[hour, 'moving']),
@@ -262,6 +283,7 @@ def run_compact(args) -> int:
         config_path = args.report_dir / 'run_config.json'
         config = {'output_format': 'compact', 'start_date': args.start_date.isoformat(),
                   'end_date': args.end_date.isoformat(), 'study_days': args.study_days,
+                  'retain_audit_candidates': args.retain_audit_candidates,
                   'ports': {port: list(bounds) for port, bounds in PORTS.items()}}
         if config_path.exists():
             if json.loads(config_path.read_text(encoding='utf-8')) != config:
@@ -316,7 +338,8 @@ def run_compact(args) -> int:
                     ais = temp / f'ais-{day.isoformat()}.csv.zst'
                     sources[day.isoformat()] = {'available': True, **download(url, ais, args.work_reserve_bytes)}
                     results = [analyze_port(day, port, bbox, ais, temp, args.node, adjacent,
-                                            compact=True, cache_policy=cache)
+                                            compact=True, cache_policy=cache,
+                                            retain_audit_candidates=args.retain_audit_candidates)
                                for port, bbox in PORTS.items()]
                     non_database = compact_size(args.report_dir) - db_path.stat().st_size
                     page_size = db.execute('PRAGMA page_size').fetchone()[0]
@@ -484,6 +507,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--report-reserve-bytes', type=int)
     p.add_argument('--retained-limit-bytes', type=int, default=10_000_000_000)
     p.add_argument('--cache-limit-bytes', type=int, default=2_000_000_000)
+    p.add_argument('--retain-audit-candidates', action='store_true')
     return p
 
 

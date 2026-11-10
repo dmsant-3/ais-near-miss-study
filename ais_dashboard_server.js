@@ -1,9 +1,32 @@
 const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { execFile, spawn } = require('node:child_process');
+const { promisify } = require('node:util');
+const zlib = require('node:zlib');
 
-const root = path.resolve(process.argv[2] || 'historical_dashboard_pilot_v3', 'daily');
+const reportRoot = path.resolve(process.argv[2] || 'historical_dashboard_pilot_v3');
+const root = path.join(reportRoot, 'daily');
+const execFileAsync = promisify(execFile);
+const reader = path.join(__dirname, 'ais_compact_reader.py');
+const database = path.join(reportRoot, 'study.sqlite');
 const ports = ['Port_of_NY_NJ', 'Port_of_LA', 'Port_of_Houston'];
+
+async function compactReader(action, args = []) {
+    const python = process.env.AIS_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+    const result = await execFileAsync(python, [reader, database, action, ...args],
+        { maxBuffer: 64 * 1024 * 1024, timeout: 60000 });
+    return result.stdout;
+}
+
+async function isCompact() {
+    try {
+        return JSON.parse(await fs.readFile(path.join(reportRoot, 'run_config.json'), 'utf8')).output_format === 'compact';
+    } catch (error) {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+    }
+}
 const theme = `<meta name="viewport" content="width=device-width,initial-scale=1"><style>
 *{box-sizing:border-box}
 body{margin:0 auto;padding:clamp(16px,4vw,48px);max-width:1120px;background:#101e2d;color:#edf5ff;font:16px/1.5 system-ui}
@@ -168,6 +191,107 @@ http.createServer(async (req, res) => {
     const route = req.url.split('?')[0];
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     try {
+        const compact = await isCompact();
+        if (compact && (route === '/' || route === '/progress.html' || route === '/api/progress')) {
+            const data = JSON.parse(await compactReader('progress'));
+            if (route === '/api/progress') {
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                res.end(JSON.stringify(data));
+            } else {
+                const links = data.ports.map(row =>
+                    '<li><a href="/' + row.ais_date + '/' + row.port + '">' +
+                    row.ais_date + ' · ' + row.port.replaceAll('_', ' ') + '</a> — ' +
+                    row.potential_events + ' screened, ' + row.likely_for_human_review + ' for review</li>');
+                res.end('<!doctype html><meta charset="utf-8"><title>AIS progress</title><h1>AIS progress</h1><ul>' + links.join('') + '</ul>' + theme);
+            }
+            return;
+        }
+        if (compact && route.startsWith('/api/')) {
+            const exportMatch = /^\/api\/export\/(daily|candidates|likely|trajectories)$/.exec(route);
+            if (exportMatch) {
+                const query = new URL(req.url, 'http://localhost').searchParams;
+                const day = query.get('date');
+                const port = query.get('port');
+                const encounter = query.get('encounter');
+                if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day) ||
+                    (port && !ports.includes(port)) ||
+                    (encounter && (!port || !/^[a-f0-9]{64}$/.test(encounter)))) {
+                    res.writeHead(400).end('Invalid export parameters');
+                    return;
+                }
+                const args = [reader, database, 'export', '--kind', exportMatch[1], '--date', day];
+                if (port) args.push('--port', port);
+                if (encounter) args.push('--encounter', encounter);
+                const python = process.env.AIS_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+                const child = spawn(python, args, { windowsHide: true });
+                let stderr = '';
+                let started = false;
+                child.stderr.on('data', chunk => { stderr += chunk.toString().slice(0, 4096); });
+                child.on('error', () => {
+                    if (!res.headersSent) {
+                        res.removeHeader('Content-Encoding');
+                        res.writeHead(500).end('Export unavailable');
+                    }
+                });
+                child.on('close', code => {
+                    if (!started && !res.headersSent) {
+                        res.removeHeader('Content-Encoding');
+                        res.writeHead(code ? (stderr.includes('KeyError') ? 404 : 500) : 200).end(code ? 'Export failed' : '');
+                    }
+                });
+                res.on('close', () => { if (!res.writableEnded) child.kill(); });
+                res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+                res.setHeader('Content-Disposition', 'attachment; filename="' + exportMatch[1] + '-' + day + '.csv"');
+                const gzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+                if (gzip) {
+                    res.setHeader('Content-Encoding', 'gzip');
+                }
+                child.stdout.once('data', chunk => {
+                    started = true;
+                    if (gzip) {
+                        const compressor = zlib.createGzip();
+                        compressor.pipe(res);
+                        compressor.write(chunk);
+                        child.stdout.pipe(compressor);
+                    } else {
+                        res.write(chunk);
+                        child.stdout.pipe(res);
+                    }
+                });
+                return;
+            }
+            const matchApi = /^\/api\/days\/(\d{4}-\d{2}-\d{2})\/ports\/([A-Za-z_]+)\/encounters(?:\/([a-f0-9]{64}))?$/.exec(route);
+            if (!matchApi || !ports.includes(matchApi[2])) {
+                res.writeHead(404).end('Not found');
+                return;
+            }
+            const query = new URL(req.url, 'http://localhost').searchParams;
+            const limit = query.get('limit') || '50';
+            const cursor = query.get('cursor');
+            if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 100 || (cursor && cursor.length > 1024)) {
+                res.writeHead(400).end('Invalid pagination');
+                return;
+            }
+            const args = ['--date', matchApi[1], '--port', matchApi[2]];
+            const action = matchApi[3] ? 'replay' : 'encounters';
+            if (matchApi[3]) args.push('--encounter', matchApi[3]);
+            else {
+                args.push('--limit', limit);
+                if (cursor) args.push('--cursor', cursor);
+            }
+            try {
+                const data = await compactReader(action, args);
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                res.end(data);
+            } catch (error) {
+                const stderr = String(error.stderr || '');
+                const status = stderr.includes('KeyError') ? 404 :
+                    stderr.includes('ValueError') ? 400 :
+                    stderr.includes('database is locked') ? 503 : 500;
+                res.writeHead(status).end('Could not load compact data');
+            }
+            return;
+        }
         if (route === '/') {
             const dates = (await fs.readdir(root)).filter(name => /^\d{4}-\d{2}-\d{2}$/.test(name)).sort().reverse();
             const links = dates.flatMap(day => ports.map(port =>
@@ -180,7 +304,8 @@ http.createServer(async (req, res) => {
             res.writeHead(404).end('Dashboard not found.');
             return;
         }
-        const html = await fs.readFile(path.join(root, match[1], match[2], 'event_dashboard.html'), 'utf8');
+        const html = compact ? await compactReader('shell') :
+            await fs.readFile(path.join(root, match[1], match[2], 'event_dashboard.html'), 'utf8');
         const location = {
             Port_of_NY_NJ: 'New York / New Jersey · New York Harbor & Atlantic approaches',
             Port_of_LA: 'Los Angeles, California · San Pedro Bay & Pacific approaches',
@@ -281,7 +406,8 @@ http.createServer(async (req, res) => {
     } catch (error) {
         res.writeHead(error.code === 'ENOENT' ? 404 : 500).end('Could not load the saved AIS dashboard. Check the report directory.');
     }
-}).listen(8765, '127.0.0.1', () => console.log('Open http://127.0.0.1:8765'));
+}).listen(Number(process.env.AIS_DASHBOARD_PORT || 8765), '127.0.0.1',
+    () => console.log('AIS dashboard is listening on 127.0.0.1'));
 
 
 
