@@ -12,6 +12,15 @@ const reader = path.join(__dirname, 'ais_compact_reader.py');
 const database = path.join(reportRoot, 'study.sqlite');
 const ports = ['Port_of_NY_NJ', 'Port_of_LA', 'Port_of_Houston'];
 
+function acceptsGzip(header) {
+    return String(header || '').split(',').some(entry => {
+        const [name, ...parameters] = entry.trim().split(';');
+        if (name.trim().toLowerCase() !== 'gzip') return false;
+        const quality = parameters.find(value => /^\s*q\s*=/i.test(value));
+        return quality === undefined || Number(quality.split('=')[1]) > 0;
+    });
+}
+
 async function compactReader(action, args = []) {
     const python = process.env.AIS_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
     const result = await execFileAsync(python, [reader, database, action, ...args],
@@ -274,7 +283,7 @@ http.createServer(async (req, res) => {
                 res.on('close', () => { if (!res.writableEnded) child.kill(); });
                 res.setHeader('Content-Type', 'text/csv; charset=utf-8');
                 res.setHeader('Content-Disposition', 'attachment; filename="' + exportMatch[1] + '-' + day + '.csv"');
-                const gzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+                const gzip = acceptsGzip(req.headers['accept-encoding']);
                 if (gzip) {
                     res.setHeader('Content-Encoding', 'gzip');
                 }

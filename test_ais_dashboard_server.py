@@ -84,6 +84,11 @@ class CompactDashboardTests(unittest.TestCase):
                 with urlopen(request, timeout=10) as response:
                     self.assertEqual(response.headers['Content-Encoding'], 'gzip')
                     self.assertIn('111', gzip.decompress(response.read()).decode('utf-8'))
+                request = Request(base + f'/api/export/candidates?date={day}&port={port}',
+                                  headers={'Accept-Encoding': 'gzip;q=0'})
+                with urlopen(request, timeout=10) as response:
+                    self.assertIsNone(response.headers.get('Content-Encoding'))
+                    self.assertIn('111', response.read().decode('utf-8'))
             finally:
                 process.terminate()
                 process.wait(timeout=10)

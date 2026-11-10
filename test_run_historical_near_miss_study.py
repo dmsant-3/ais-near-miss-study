@@ -1,5 +1,5 @@
 """Offline compact runner publication and restart tests."""
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from collections import defaultdict, namedtuple
@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import ais_compact_store
+import ais_compact_reader
 import run_historical_near_miss_study as runner
 
 
@@ -43,7 +44,9 @@ class CompactRunnerTests(unittest.TestCase):
             event = {'mmsi_a': '1', 'mmsi_b': '2', 'first_flag_utc': '2020-01-02T00:05:00Z',
                      'distance_time_utc': '', 'likely_near_miss_score_8': '5',
                      'likely_near_miss_classification': 'elevated_priority_candidate'}
+            commands = []
             def run_command(command):
+                commands.append(command)
                 if command[1].endswith('count_ais_near_misses.py'):
                     detected = Path(command[command.index('--output-dir') + 1])
                     (detected / 'summary.json').write_text('{"quality": {}}', encoding='utf-8')
@@ -59,10 +62,12 @@ class CompactRunnerTests(unittest.TestCase):
                  patch.object(runner, 'collect_wind', return_value={}), \
                  patch.object(runner, 'collect_hourly_environment', return_value=({}, {})):
                 result = runner.analyze_port(day, 'port', (0, 0, 1, 1), root / 'ais',
-                                             root, None, compact=True)
+                                             root, 'custom-node', compact=True)
             self.assertEqual(result['likely_for_human_review'], 1)
             self.assertEqual(len(result['encounters']), 1)
             self.assertFalse(result['encounters'][0]['details']['_compact_replay'])
+            self.assertIn('custom-node', commands[0])
+            self.assertIn('custom-node', commands[1])
 
     def test_publishes_all_ports_and_skips_committed_date_on_restart(self):
         with TemporaryDirectory() as directory:
@@ -111,6 +116,36 @@ class CompactRunnerTests(unittest.TestCase):
     def test_requires_explicit_date_and_reserves(self):
         with self.assertRaises(ValueError):
             runner.main(['--output-format', 'compact'])
+
+    def test_thirty_date_study_stops_across_multiple_invocations(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            start = date(2020, 1, 1)
+            end = start + timedelta(days=30)
+            links = {start + timedelta(days=index): f'https://example.test/{index}' for index in range(31)}
+            args = ['--output-format', 'compact', '--start-date', str(start), '--end-date', str(end),
+                    '--report-dir', str(root / 'report'), '--work-dir', str(root / 'work'),
+                    '--work-reserve-bytes', '1', '--report-reserve-bytes', '1',
+                    '--pause-seconds', '0', '--max-days', '7']
+            def download(url, target, reserve):
+                target.write_bytes(b'ais')
+                return {'source_url': url, 'sha256': 'fixture', 'compressed_bytes': 3}
+            def analyze(day, port, bbox, ais, staging, node, adjacent, **kwargs):
+                return {'port': port, 'potential_events': 0, 'likely_for_human_review': 0,
+                        'elevated_priority_candidates': 0, 'lower_priority_candidates': 0,
+                        'detector_quality': {}}
+            with patch.object(runner, 'available_days', return_value=links), \
+                 patch.object(runner, 'download', side_effect=download) as downloader, \
+                 patch.object(runner, 'analyze_port', side_effect=analyze):
+                for _ in range(6):
+                    self.assertEqual(runner.main(args), 0)
+                self.assertEqual(downloader.call_count, 30)
+            with closing(ais_compact_reader.open_reader(root / 'report' / 'study.sqlite')) as db:
+                progress = ais_compact_reader.progress(db)
+                self.assertEqual(len(progress['ports']), 90)
+                self.assertEqual(progress['projection']['measured_dates'], 30)
+                self.assertNotIn('tracks', json.dumps(progress))
+                self.assertEqual(len(ais_compact_store.completed_dates(db)), 30)
 
     def test_space_preflight_stops_before_download(self):
         with TemporaryDirectory() as directory:

@@ -45,7 +45,7 @@ The study stops after 30 available dates by default. Use `--study-days` to set t
 
 For compact cron runs, set `AIS_OUTPUT_FORMAT=compact`, `AIS_END_DATE`, `AIS_WORK_RESERVE_BYTES` and `AIS_REPORT_RESERVE_BYTES` in the cron environment. The wrapper accepts `AIS_START_DATE`, `AIS_STUDY_DAYS`, `AIS_REPORT_DIR` and `AIS_WORK_DIR`. It uses a separate compact report directory by default.
 
-To import a completed legacy date, initialize the compact report with the same compact runner options and `--dry-run`, then run `.venv/bin/python migrate_legacy_ais_day.py historical_cron_report historical_compact_report 2016-01-01`. The importer checks source metadata, all three port summaries, hourly traffic and replay tracks before committing. It assigns replay samples to recorded source dates by their UTC timestamps. Dates without the required source checksums or hourly files need the original AIS sources or a separately verified archive. The legacy files remain in place.
+To import a completed legacy date, initialize the compact report with the same compact runner options and `--dry-run`, then run `.venv/bin/python migrate_legacy_ais_day.py historical_cron_report historical_compact_report 2016-01-01`. The importer checks recorded source metadata, all three port summaries, hourly traffic and replay tracks before committing. It assigns replay samples to recorded source dates by their UTC timestamps. The importer does not re-download or hash the original AIS files. Dates without the required source checksums or hourly files need the original AIS sources or a separately verified archive. The legacy files remain in place.
 
 ## Ubuntu cron
 

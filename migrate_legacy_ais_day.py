@@ -26,9 +26,13 @@ def load_day(legacy_root: Path, day: date, retain_audit: bool):
     sources.update(summary.get('adjacent_sources', {}))
     for source_date, source in sources.items():
         date.fromisoformat(source_date)
-        if source['available'] and not all(source.get(key) is not None
-                                           for key in ('source_url', 'sha256', 'compressed_bytes')):
-            raise ValueError(f'Legacy source provenance is incomplete for {source_date}')
+        if source['available']:
+            digest = source.get('sha256')
+            size = source.get('compressed_bytes')
+            if (not source.get('source_url') or not isinstance(digest, str)
+                    or re.fullmatch(r'[0-9a-fA-F]{64}', digest) is None
+                    or not isinstance(size, int) or isinstance(size, bool) or size <= 0):
+                raise ValueError(f'Legacy source provenance is incomplete for {source_date}')
     results = []
     expected = []
     for original in summary['ports']:
@@ -96,7 +100,9 @@ def load_day(legacy_root: Path, day: date, retain_audit: bool):
                         'unique_moving': int(row['unique_moving']),
                         'unique_anchored': int(row['unique_anchored'])}
                        for row in csv.DictReader(stream)]
-        if len(traffic) != 24:
+        day_start = int(timestamp(day.isoformat() + 'T00:00:00Z'))
+        expected_hours = {day_start + 3600 * index for index in range(24)}
+        if len(traffic) != 24 or {row['hour'] for row in traffic} != expected_hours:
             raise ValueError(f'Expected 24 hourly traffic rows for {port}')
         marine = {int(hour): rows for hour, rows in data.get('marine', {}).items()}
         for hour, values in data.get('wind', {}).items():

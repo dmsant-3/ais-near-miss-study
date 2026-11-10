@@ -205,6 +205,8 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
         confirm = [sys.executable, str(Path(__file__).with_name('confirm_near_misses.py')),
                    '--ais-file', str(ais), '--events', str(events), '--bbox',
                    *(str(v) for v in bbox), '--output', str(evidence)]
+        if node:
+            confirm += ['--node', node]
         run_command(confirm)
         rank = [sys.executable, str(Path(__file__).with_name('rank_likely_near_misses.py')),
                 '--input', str(evidence), '--output', str(scored)]

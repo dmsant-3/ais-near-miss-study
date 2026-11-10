@@ -48,7 +48,7 @@ class MigrationTests(unittest.TestCase):
                                 'elevated_priority_candidates': 0, 'lower_priority_candidates': 0,
                                 'detector_quality': {}})
             summary = {'date': str(day), 'source': {'source_url': 'https://example.test/ais',
-                       'sha256': 'verified', 'compressed_bytes': 123}, 'ports': results}
+                       'sha256': 'a' * 64, 'compressed_bytes': 123}, 'ports': results}
             summary_path = daily / 'summary.json'
             summary_path.write_text(json.dumps(summary), encoding='utf-8')
             broken = dict(summary, source={'source_url': 'https://example.test/ais'})

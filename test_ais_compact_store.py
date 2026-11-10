@@ -106,6 +106,8 @@ class CompactStoreTests(unittest.TestCase):
              'longitude': 1.0, 'latitude': 2.0, 'name': 'Ship', 'anchored': False},
             {'source_date': '2020-01-02', 'mmsi': '111', 'tick': 100,
              'longitude': 1.1, 'latitude': 2.0, 'name': 'Ship', 'anchored': False},
+            {'source_date': '2020-01-02', 'mmsi': '111', 'tick': 100,
+             'longitude': 1.1, 'latitude': 2.0, 'name': 'Renamed', 'anchored': False},
         ]
         event = {'mmsi_a': '111', 'mmsi_b': '222', 'first_flag_utc': '2020-01-02T00:00:00Z',
                  'window_start': 99, 'window_end': 100, 'details': {'score': 8},
@@ -114,11 +116,13 @@ class CompactStoreTests(unittest.TestCase):
         self.results[0]['track_samples'] = samples + samples
         self.results[0]['encounters'] = [event, second]
         self.publish()
-        self.assertEqual(self.db.execute('SELECT count(*) FROM track_sample').fetchone()[0], 2)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM track_sample').fetchone()[0], 3)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM vessel_name').fetchone()[0], 2)
         for entry in (event, second):
             event_id = store.encounter_id(self.day, 'NY', '222', '111', entry['first_flag_utc'])
             tracks = store.replay_tracks(self.db, self.day, 'NY', event_id)
-            self.assertEqual([point[0] for point in tracks['111']], [99, 100])
+            self.assertEqual([point[0] for point in tracks['111']], [99, 100, 100])
+            self.assertEqual([point[3] for point in tracks['111']], ['Ship', 'Renamed', 'Ship'])
 
     def test_invalid_sample_source_rolls_back_publication(self):
         self.results[0]['track_samples'] = [

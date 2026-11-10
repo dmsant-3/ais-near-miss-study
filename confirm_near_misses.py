@@ -119,14 +119,15 @@ def excluded_vessel_type(value):
                      'tug','tugboat','towing','towing vessel'} or 'barge' in value.split()
 
 
-def load_tracks(path: Path, vessels: set[str], bbox: list[float], max_speed: float, tugboats: set[str] | None = None) -> dict:
+def load_tracks(path: Path, vessels: set[str], bbox: list[float], max_speed: float,
+                tugboats: set[str] | None = None, node: str | None = None) -> dict:
     west, south, east, north = bbox
     aliases = {'mmsi':'mmsi', 'basedatetime':'time', 'longitude':'lon', 'lon':'lon',
                'latitude':'lat', 'lat':'lat', 'sog':'sog', 'cog':'cog', 'length':'length', 'vesseltype':'vesseltype'}
     tracks: dict[str, list[tuple]] = {m: [] for m in vessels}
     bad = 0
     seen = 0
-    with detector.open_csv(path) as stream:
+    with detector.open_csv(path, node) as stream:
         reader = csv.DictReader(stream)
         mapping = {aliases[key]: name for name in (reader.fieldnames or [])
                    if (key := ''.join(c for c in name.lower() if c.isalnum())) in aliases}
@@ -283,6 +284,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--maneuver-after-seconds',type=int,default=180)
     p.add_argument('--min-samples',type=int,default=3)
     p.add_argument('--max-speed-knots',type=float,default=100.0)
+    p.add_argument('--node', help='Optional Node.js path for Zstandard decompression')
     return p
 
 
@@ -294,7 +296,7 @@ def main(argv=None) -> int:
         raise FileExistsError(f'Refusing to overwrite {args.output}')
     events,vessels=load_events(args.events)
     tugboats = set()
-    tracks=load_tracks(args.ais_file.resolve(strict=True),vessels,args.bbox,args.max_speed_knots,tugboats)
+    tracks=load_tracks(args.ais_file.resolve(strict=True),vessels,args.bbox,args.max_speed_knots,tugboats,args.node)
     fields=list(events[0].keys())
     fields=[x for x in fields if not x.startswith('_')]
     evidence_fields=['tug_track_pattern','involves_excluded_vessel','rule_classification','human_review_label','reviewer_notes',
