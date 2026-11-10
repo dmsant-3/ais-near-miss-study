@@ -8,12 +8,14 @@ from ais_weather_pipeline import download
 
 
 class CompactCache:
-    def __init__(self, root: Path, scratch: Path, max_bytes: int = 2_000_000_000):
+    def __init__(self, root: Path, scratch: Path, max_bytes: int = 2_000_000_000,
+                 reserve_bytes: int = 0):
         if max_bytes <= 0:
             raise ValueError('Cache limit must be positive')
         self.root = root
         self.scratch = scratch
         self.max_bytes = max_bytes
+        self.reserve_bytes = reserve_bytes
         root.mkdir(parents=True, exist_ok=True)
         scratch.mkdir(parents=True, exist_ok=True)
         self._evict(0)
@@ -44,7 +46,7 @@ class CompactCache:
             os.utime(target, None)
             return target, info
         temporary = self.scratch / f'{snapshot}_{key}'
-        info = download(url, temporary)
+        info = download(url, temporary, reserve_bytes=self.reserve_bytes)
         if info['bytes'] > self.max_bytes:
             return temporary, info
         self._evict(info['bytes'])

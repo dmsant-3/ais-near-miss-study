@@ -246,9 +246,11 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
          'unique_anchored': len(traffic[hour, 'anchored'])}
         for hour in range(24)
     ]
-    wind = collect_wind(day, bbox, cache_policy)
+    wind_source = {}
+    wind = collect_wind(day, bbox, cache_policy, wind_source)
     result['environment_hourly'], result['environment_sources'] = collect_hourly_environment(
         day, bbox, start, wind, cache_policy)
+    result['environment_sources']['modeled_wind'] = wind_source
     return result
 
 
@@ -277,9 +279,35 @@ def compact_size(report_dir: Path) -> int:
     return sum(path.stat().st_size for path in report_dir.rglob('*') if path.is_file())
 
 
+@contextlib.contextmanager
+def compact_status(report_dir: Path):
+    """Publish a bounded latest-run outcome while the report lock is held."""
+    config_path = report_dir / 'run_config.json'
+    if config_path.exists():
+        if json.loads(config_path.read_text(encoding='utf-8')).get('output_format') != 'compact':
+            raise ValueError('Compact runs require a separate report directory')
+    elif any(path.name not in ('.compact.lock', 'run_status.json') for path in report_dir.iterdir()):
+        raise ValueError('Compact runs require an empty report directory')
+    def write(state, message=''):
+        status = {'state': state, 'updated_utc': datetime.now(timezone.utc).isoformat(),
+                  'message': message[:400]}
+        target = report_dir / 'run_status.json'
+        temporary = target.with_suffix('.part')
+        temporary.write_text(json.dumps(status, ensure_ascii=True) + '\n', encoding='utf-8')
+        publish_report(temporary, target)
+    write('running')
+    try:
+        yield
+    except BaseException as exc:
+        write('failed', f'{type(exc).__name__}: {exc}')
+        raise
+    else:
+        write('complete')
+
+
 def run_compact(args) -> int:
     """Process compact dates using transactional SQLite publication."""
-    with compact_lock(args.report_dir):
+    with compact_lock(args.report_dir), compact_status(args.report_dir):
         config_path = args.report_dir / 'run_config.json'
         config = {'output_format': 'compact', 'start_date': args.start_date.isoformat(),
                   'end_date': args.end_date.isoformat(), 'study_days': args.study_days,
@@ -289,7 +317,7 @@ def run_compact(args) -> int:
             if json.loads(config_path.read_text(encoding='utf-8')) != config:
                 raise ValueError('Compact report configuration differs from the existing run')
         else:
-            if any(path.name != '.compact.lock' for path in args.report_dir.iterdir()):
+            if any(path.name not in ('.compact.lock', 'run_status.json') for path in args.report_dir.iterdir()):
                 raise ValueError('Compact runs require an empty report directory')
             temp = config_path.with_suffix('.part')
             temp.write_text(json.dumps(config, indent=2) + '\n', encoding='utf-8')
@@ -309,7 +337,9 @@ def run_compact(args) -> int:
                     print(day, url)
                 return 0
             for index, (day, url) in enumerate(pending):
-                if (shutil.disk_usage(args.work_dir).free < args.work_reserve_bytes
+                same_volume = args.work_dir.stat().st_dev == args.report_dir.stat().st_dev
+                work_reserve = args.work_reserve_bytes + (args.report_reserve_bytes if same_volume else 0)
+                if (shutil.disk_usage(args.work_dir).free < work_reserve
                         or shutil.disk_usage(args.report_dir).free < args.report_reserve_bytes):
                     raise OSError('Insufficient free space for configured scratch reserves')
                 if compact_size(args.report_dir) >= args.retained_limit_bytes:
@@ -319,7 +349,7 @@ def run_compact(args) -> int:
                     cache_key = __import__('hashlib').sha256(
                         str(args.report_dir).encode('utf-8')).hexdigest()
                     cache = CompactCache(args.work_dir / 'compact_cache' / cache_key,
-                                         temp / 'cache', args.cache_limit_bytes)
+                                         temp / 'cache', args.cache_limit_bytes, work_reserve)
                     sources = {}
                     def adjacent(other_day):
                         key = other_day.isoformat()
@@ -333,17 +363,23 @@ def run_compact(args) -> int:
                             sources[key] = {'available': False}
                             return None
                         target = temp / f'ais-{key}.csv.zst'
-                        sources[key] = {'available': True, **download(other_url, target, args.work_reserve_bytes)}
+                        sources[key] = {'available': True, **download(other_url, target, work_reserve)}
                         return target
                     ais = temp / f'ais-{day.isoformat()}.csv.zst'
-                    sources[day.isoformat()] = {'available': True, **download(url, ais, args.work_reserve_bytes)}
-                    results = [analyze_port(day, port, bbox, ais, temp, args.node, adjacent,
-                                            compact=True, cache_policy=cache,
-                                            retain_audit_candidates=args.retain_audit_candidates)
-                               for port, bbox in PORTS.items()]
+                    sources[day.isoformat()] = {'available': True, **download(url, ais, work_reserve)}
+                    results = []
+                    for port, bbox in PORTS.items():
+                        result = analyze_port(day, port, bbox, ais, temp, args.node, adjacent,
+                                              compact=True, cache_policy=cache,
+                                              retain_audit_candidates=args.retain_audit_candidates)
+                        staged = temp / f'{port}.compact.json'
+                        with staged.open('w', encoding='utf-8') as stream:
+                            json.dump(result, stream, allow_nan=False, separators=(',', ':'))
+                        results.append({'port': port, '_staged_path': str(staged)})
+                        del result
                     non_database = compact_size(args.report_dir) - db_path.stat().st_size
                     page_size = db.execute('PRAGMA page_size').fetchone()[0]
-                    max_pages = (args.retained_limit_bytes - non_database) // page_size
+                    max_pages = (args.retained_limit_bytes - non_database - 8192) // page_size
                     current_pages = db.execute('PRAGMA page_count').fetchone()[0]
                     if max_pages < current_pages:
                         raise OSError('Compact retained-output limit reached')

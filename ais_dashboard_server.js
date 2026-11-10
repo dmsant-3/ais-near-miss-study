@@ -194,6 +194,14 @@ http.createServer(async (req, res) => {
         const compact = await isCompact();
         if (compact && (route === '/' || route === '/progress.html' || route === '/api/progress')) {
             const data = JSON.parse(await compactReader('progress'));
+            data.config = JSON.parse(await fs.readFile(path.join(reportRoot, 'run_config.json'), 'utf8'));
+            try {
+                data.status = JSON.parse(await fs.readFile(path.join(reportRoot, 'run_status.json'), 'utf8'));
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+                data.status = null;
+            }
+            data.completed_days = new Set(data.ports.map(row => row.ais_date)).size;
             if (route === '/api/progress') {
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
                 res.end(JSON.stringify(data));
@@ -202,7 +210,9 @@ http.createServer(async (req, res) => {
                     '<li><a href="/' + row.ais_date + '/' + row.port + '">' +
                     row.ais_date + ' · ' + row.port.replaceAll('_', ' ') + '</a> — ' +
                     row.potential_events + ' screened, ' + row.likely_for_human_review + ' for review</li>');
-                res.end('<!doctype html><meta charset="utf-8"><title>AIS progress</title><h1>AIS progress</h1><ul>' + links.join('') + '</ul>' + theme);
+                res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>AIS progress</title><h1>AIS progress</h1><p>' +
+                    data.completed_days + ' completed AIS dates of ' + Number(data.config.study_days) +
+                    '</p><ul>' + links.join('') + '</ul>' + theme);
             }
             return;
         }

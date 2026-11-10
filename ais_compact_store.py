@@ -217,6 +217,11 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                                    (source_date, source['sha256']))
         for result in port_results:
             port = result['port']
+            if '_staged_path' in result:
+                with Path(result['_staged_path']).open(encoding='utf-8') as stream:
+                    result = json.load(stream)
+                if result['port'] != port:
+                    raise ValueError('Staged port result does not match its declared port')
             connection.execute(
                 'INSERT INTO port_day VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                 (day_text, port, result['potential_events'],

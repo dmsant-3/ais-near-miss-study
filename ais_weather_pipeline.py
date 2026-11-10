@@ -128,7 +128,7 @@ def write_json(path, value):
     tmp.replace(path)
 
 
-def download(url, target):
+def download(url, target, reserve_bytes=0):
     """Cache only completed downloads verified against their local manifest."""
     target.parent.mkdir(parents=True,exist_ok=True)
     manifest = target.with_suffix(target.suffix+'.download.json')
@@ -143,10 +143,14 @@ def download(url, target):
     part = target.with_suffix(target.suffix+'.part')
     with request(url) as response, part.open('wb') as out:
         expected = response.headers.get('Content-Length')
+        if reserve_bytes and expected is not None and shutil.disk_usage(target.parent).free < int(expected) + reserve_bytes:
+            raise environment.StorageBudgetExceeded('Insufficient space for response and scratch reserve')
         total = 0
         next_report = 50*1024*1024
         digest = hashlib.sha256()
         for chunk in iter(lambda:response.read(1024*1024),b''):
+            if reserve_bytes and shutil.disk_usage(target.parent).free < len(chunk) + reserve_bytes:
+                raise environment.StorageBudgetExceeded('Insufficient space for response and scratch reserve')
             out.write(chunk)
             digest.update(chunk)
             total += len(chunk)

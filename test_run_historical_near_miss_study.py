@@ -3,6 +3,7 @@ from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from collections import namedtuple
+import json
 import unittest
 from unittest.mock import patch
 
@@ -63,6 +64,9 @@ class CompactRunnerTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, 'Insufficient free space'):
                     runner.main(args)
                 download.assert_not_called()
+            status = json.loads((root / 'report' / 'run_status.json').read_text(encoding='utf-8'))
+            self.assertEqual(status['state'], 'failed')
+            self.assertIn('Insufficient free space', status['message'])
 
 
 if __name__ == '__main__':

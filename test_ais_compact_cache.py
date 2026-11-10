@@ -15,7 +15,7 @@ class CompactCacheTests(unittest.TestCase):
             cache = CompactCache(root / 'cache', root / 'scratch', max_bytes=4)
             calls = []
 
-            def download(url, target):
+            def download(url, target, reserve_bytes=0):
                 if target.exists():
                     return json.loads(target.with_suffix('.download.json').read_text())
                 calls.append(url)

@@ -126,19 +126,27 @@ def compact_replay_records(eligible, tracks, point_sources):
     return encounters, list(samples.values())
 
 
-def collect_wind(day, bbox, cache_policy=None):
+def collect_wind(day, bbox, cache_policy=None, source_report=None):
     west, south, east, north = bbox
     try:
         url = weather_url(day-timedelta(days=1), (west+east)/2, (south+north)/2)
         url = url.replace('end_date='+str(day), 'end_date='+str(day+timedelta(days=1)))
+        if source_report is not None:
+            source_report['url'] = url
         if cache_policy is None:
             with urlopen(url, timeout=30) as response:
                 hourly = json.load(response)['hourly']
         else:
-            body, _ = cache_policy.fetch(url)
+            body, info = cache_policy.fetch(url)
+            if source_report is not None:
+                source_report.update(info)
             hourly = json.loads(body.read_text(encoding='utf-8'))['hourly']
+        if source_report is not None:
+            source_report['status'] = 'available'
         return dict(zip(hourly['time'], zip(hourly['wind_speed_10m'], hourly['wind_direction_10m'])))
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError) as exc:
+        if source_report is not None:
+            source_report.update(status='unavailable', error=str(exc))
         return {}
 
 

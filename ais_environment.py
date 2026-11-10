@@ -208,6 +208,10 @@ def parse_currents(data,station,start,end,bin_id,depth,url='',checksum=''):
     return rows
 
 
+class StorageBudgetExceeded(Exception):
+    """Stop processing when a configured scratch-space reserve is exhausted."""
+
+
 class EnvironmentalDownloader:
     def __init__(self,args,download):
         self.args = args
