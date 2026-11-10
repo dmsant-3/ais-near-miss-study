@@ -67,6 +67,72 @@ class CompactStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             store.open_writer(other)
 
+    def test_replays_share_samples_and_cross_midnight(self):
+        self.sources['2020-01-01'] = {
+            'available': True, 'source_url': 'https://example.test/previous',
+            'sha256': 'previous', 'compressed_bytes': 20,
+        }
+        samples = [
+            {'source_date': '2020-01-01', 'mmsi': '111', 'tick': 99,
+             'longitude': 1.0, 'latitude': 2.0, 'name': 'Ship', 'anchored': False},
+            {'source_date': '2020-01-02', 'mmsi': '111', 'tick': 100,
+             'longitude': 1.1, 'latitude': 2.0, 'name': 'Ship', 'anchored': False},
+        ]
+        event = {'mmsi_a': '111', 'mmsi_b': '222', 'first_flag_utc': '2020-01-02T00:00:00Z',
+                 'window_start': 99, 'window_end': 100, 'details': {'score': 8},
+                 'vessels': [{'mmsi': '111', 'role': 'involved'}]}
+        second = dict(event, first_flag_utc='2020-01-02T00:01:00Z')
+        self.results[0]['track_samples'] = samples + samples
+        self.results[0]['encounters'] = [event, second]
+        self.publish()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM track_sample').fetchone()[0], 2)
+        for entry in (event, second):
+            event_id = store.encounter_id(self.day, 'NY', '222', '111', entry['first_flag_utc'])
+            tracks = store.replay_tracks(self.db, self.day, 'NY', event_id)
+            self.assertEqual([point[0] for point in tracks['111']], [99, 100])
+
+    def test_invalid_sample_source_rolls_back_publication(self):
+        self.results[0]['track_samples'] = [
+            {'source_date': '2020-01-01', 'mmsi': '111', 'tick': 1,
+             'longitude': 1.0, 'latitude': 2.0, 'name': 'Ship', 'anchored': False}
+        ]
+        with self.assertRaises(ValueError):
+            self.publish()
+        self.assertEqual(store.completed_dates(self.db), set())
+
+    def test_later_available_source_does_not_fill_earlier_missing_coverage(self):
+        event = {'mmsi_a': '111', 'mmsi_b': '222', 'first_flag_utc': '2020-01-02T00:00:00Z',
+                 'window_start': 99, 'window_end': 100, 'details': {},
+                 'vessels': [{'mmsi': '111', 'role': 'involved'}]}
+        self.results[0]['encounters'] = [event]
+        self.publish()
+        next_day = date(2020, 1, 3)
+        next_sources = {
+            '2020-01-03': {'available': True, 'source_url': 'https://example.test/next',
+                           'sha256': 'next', 'compressed_bytes': 1},
+            '2020-01-01': {'available': True, 'source_url': 'https://example.test/previous',
+                           'sha256': 'previous', 'compressed_bytes': 1},
+        }
+        self.results[0]['encounters'] = []
+        self.results[0]['track_samples'] = [
+            {'source_date': '2020-01-01', 'mmsi': '111', 'tick': 99,
+             'longitude': 1.0, 'latitude': 2.0, 'name': 'Ship', 'anchored': False}
+        ]
+        store.publish_day(self.db, next_day, next_sources, self.results, self.bounds, 'score-8')
+        event_id = store.encounter_id(self.day, 'NY', '111', '222', event['first_flag_utc'])
+        self.assertEqual(store.replay_tracks(self.db, self.day, 'NY', event_id), {})
+
+    def test_v1_database_upgrades_without_losing_dates(self):
+        old = Path(self.directory.name) / 'old.sqlite'
+        with closing(sqlite3.connect(old)) as connection:
+            connection.executescript(store.SCHEMA + '''
+                INSERT INTO study_day VALUES ('2020-01-01', 'now', 'old');
+                PRAGMA user_version = 1;
+            ''')
+        with closing(store.open_writer(old)) as upgraded:
+            self.assertEqual(store.completed_dates(upgraded), {date(2020, 1, 1)})
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 2)
+
 
 if __name__ == '__main__':
     unittest.main()

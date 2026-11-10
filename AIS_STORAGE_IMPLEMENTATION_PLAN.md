@@ -6,7 +6,8 @@ The compact path stores 30 AIS dates for the three configured ports. Use decimal
 
 - The historical runner records the availability, source URL, byte count, and checksum of adjacent AIS files in each new daily summary. An unavailable adjacent date is recorded once per attempt.
 - `ais_compact_store.py` initializes a versioned SQLite database and atomically publishes daily source provenance and three-port summary counts. Its standalone tests cover rollback, retry, duplicate dates, and invalid port sets.
-- Encounter and track storage, compact runner integration, dashboard endpoints, storage limits, cache policy, migration, and parity checks remain to be implemented. Existing reports lack the new adjacent-source records. The new store is not yet used by the runner.
+- The store also accepts encounter membership and deduplicated track samples, and reconstructs windowed tracks using the source files available for the study date. Version 1 stores upgrade to version 2. Encounter details currently use JSON and the remaining typed fields, environmental records, and traffic records still need implementation.
+- Compact runner integration, dashboard endpoints, storage limits, cache policy, legacy report migration, and parity checks remain to be implemented. Existing reports lack the new adjacent-source records. The new store is not yet used by the runner.
 
 ## Batch entry point and publishing
 
