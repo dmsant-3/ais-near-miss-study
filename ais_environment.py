@@ -220,6 +220,11 @@ class EnvironmentalDownloader:
         self.end = (midnight+timedelta(days=2)).timestamp()
 
     def fetch(self,url):
+        policy = getattr(self.args, 'cache_policy', None)
+        if policy is not None:
+            path, info = policy.fetch(url)
+            self.requests.append(info)
+            return path, info['sha256']
         # Daily snapshots refresh changing catalogs/current-year observations.
         snapshot = datetime.now(timezone.utc).date().isoformat()
         key = hashlib.sha256(url.encode()).hexdigest()[:24]

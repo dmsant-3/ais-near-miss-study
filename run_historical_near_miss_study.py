@@ -34,6 +34,7 @@ from ais_request_policy import open_request as urlopen
 
 import count_ais_near_misses as detector
 import ais_compact_store
+from ais_compact_cache import CompactCache
 from ais_event_dashboard import (collect_hourly_environment, collect_replay_tracks,
                                  collect_wind, compact_replay_records, export)
 
@@ -170,7 +171,8 @@ def run_command(args: list[str]) -> None:
 
 
 def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
-                 staging: Path, node: str | None, adjacent=None, compact=False) -> dict:
+                 staging: Path, node: str | None, adjacent=None, compact=False,
+                 cache_policy=None) -> dict:
     port_dir = staging / port
     detected_dir = port_dir / 'detected'
     detected_dir.mkdir(parents=True)
@@ -223,9 +225,9 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
          'unique_anchored': len(traffic[hour, 'anchored'])}
         for hour in range(24)
     ]
-    wind = collect_wind(day, bbox)
+    wind = collect_wind(day, bbox, cache_policy)
     result['environment_hourly'], result['environment_sources'] = collect_hourly_environment(
-        day, bbox, start, wind)
+        day, bbox, start, wind, cache_policy)
     return result
 
 
@@ -292,6 +294,10 @@ def run_compact(args) -> int:
                     raise OSError('Compact retained-output limit reached')
                 with tempfile.TemporaryDirectory(prefix='ais_compact_', dir=args.work_dir) as name:
                     temp = Path(name)
+                    cache_key = __import__('hashlib').sha256(
+                        str(args.report_dir).encode('utf-8')).hexdigest()
+                    cache = CompactCache(args.work_dir / 'compact_cache' / cache_key,
+                                         temp / 'cache', args.cache_limit_bytes)
                     sources = {}
                     def adjacent(other_day):
                         key = other_day.isoformat()
@@ -309,7 +315,8 @@ def run_compact(args) -> int:
                         return target
                     ais = temp / f'ais-{day.isoformat()}.csv.zst'
                     sources[day.isoformat()] = {'available': True, **download(url, ais, args.work_reserve_bytes)}
-                    results = [analyze_port(day, port, bbox, ais, temp, args.node, adjacent, compact=True)
+                    results = [analyze_port(day, port, bbox, ais, temp, args.node, adjacent,
+                                            compact=True, cache_policy=cache)
                                for port, bbox in PORTS.items()]
                     non_database = compact_size(args.report_dir) - db_path.stat().st_size
                     page_size = db.execute('PRAGMA page_size').fetchone()[0]
@@ -476,6 +483,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--work-reserve-bytes', type=int)
     p.add_argument('--report-reserve-bytes', type=int)
     p.add_argument('--retained-limit-bytes', type=int, default=10_000_000_000)
+    p.add_argument('--cache-limit-bytes', type=int, default=2_000_000_000)
     return p
 
 
@@ -491,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError('Compact mode requires an explicit --end-date')
         if (args.study_days <= 0 or args.work_reserve_bytes is None or args.work_reserve_bytes <= 0
                 or args.report_reserve_bytes is None or args.report_reserve_bytes <= 0
-                or args.retained_limit_bytes <= 0):
+                or args.retained_limit_bytes <= 0 or args.cache_limit_bytes <= 0):
             raise ValueError('Compact study days, reserves, and retained limit must be positive')
     args.report_dir = args.report_dir.resolve()
     args.work_dir = args.work_dir.resolve()
