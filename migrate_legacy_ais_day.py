@@ -129,7 +129,8 @@ def import_day(legacy_root: Path, compact_root: Path, day: date,
         db_path = compact_root / 'study.sqlite'
         if not db_path.exists():
             raise FileNotFoundError('Initialize the compact study before importing')
-        db = store.open_writer(db_path)
+        non_database = compact_size(compact_root) - db_path.stat().st_size
+        db = store.open_writer(db_path, max_bytes=limit_bytes - non_database - 8192)
         try:
             if len(store.completed_dates(db)) >= config['study_days']:
                 raise ValueError('Compact study date limit reached')

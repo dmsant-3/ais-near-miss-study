@@ -409,7 +409,15 @@ def run_compact(args) -> int:
         db_path = args.report_dir / 'study.sqlite'
         cache_key = hashlib.sha256(str(args.report_dir).encode('utf-8')).hexdigest()
         cleanup_compact_attempts(args.work_dir, args.report_dir, cache_key)
-        db = ais_compact_store.open_writer(db_path)
+        same_volume = args.work_dir.stat().st_dev == args.report_dir.stat().st_dev
+        work_reserve = args.work_reserve_bytes + (args.report_reserve_bytes if same_volume else 0)
+        if (shutil.disk_usage(args.work_dir).free < work_reserve
+                or shutil.disk_usage(args.report_dir).free < args.report_reserve_bytes):
+            raise OSError('Insufficient free space for configured scratch reserves')
+        database_bytes = db_path.stat().st_size if db_path.exists() else 0
+        allowed_database_bytes = args.retained_limit_bytes - (
+            compact_size(args.report_dir) - database_bytes) - 8192
+        db = ais_compact_store.open_writer(db_path, max_bytes=allowed_database_bytes)
         try:
             links = available_days(args.start_date, args.end_date,
                                    args.work_dir / 'api_state' if args.cron else None)

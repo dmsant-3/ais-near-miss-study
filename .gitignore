@@ -5,6 +5,11 @@ __pycache__/
 
 # Downloaded AIS and environmental caches
 ais_weather_cache/
+ais_batch_work/
+ais_cron_work/
+historical_compact_report/
+historical_cron_report/
+.ais-cron.lock
 *.csv.zst
 *.csv.gz
 

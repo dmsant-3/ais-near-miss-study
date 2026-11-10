@@ -68,6 +68,12 @@ class CompactStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             store.open_writer(other)
 
+    def test_existing_store_cannot_open_beyond_retained_limit(self):
+        self.publish()
+        with self.assertRaises(OSError):
+            store.open_writer(self.path, max_bytes=1)
+        self.assertEqual(store.completed_dates(self.db), {self.day})
+
     def test_replays_share_samples_and_cross_midnight(self):
         self.sources['2020-01-01'] = {
             'available': True, 'source_url': 'https://example.test/previous',
@@ -132,7 +138,7 @@ class CompactStoreTests(unittest.TestCase):
             ''')
         with closing(store.open_writer(old)) as upgraded:
             self.assertEqual(store.completed_dates(upgraded), {date(2020, 1, 1)})
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 6)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 7)
 
     def test_v3_database_adds_measurements(self):
         old = Path(self.directory.name) / 'v3.sqlite'
@@ -140,7 +146,7 @@ class CompactStoreTests(unittest.TestCase):
             connection.executescript(store.SCHEMA + store.REPLAY_SCHEMA + store.HOURLY_SCHEMA
                                      + 'PRAGMA user_version = 3;')
         with closing(store.open_writer(old)) as upgraded:
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 6)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 7)
             self.assertEqual(upgraded.execute('SELECT count(*) FROM storage_measurement').fetchone()[0], 0)
 
     def test_v4_database_keeps_legacy_evidence_during_upgrade(self):
@@ -162,6 +168,26 @@ class CompactStoreTests(unittest.TestCase):
             self.assertEqual(row['maneuver_evidence_a'], 1)
             self.assertEqual(store.encounter_details(upgraded, row)['likely_near_miss_evidence'], 'old reason')
 
+    def test_v6_environment_values_survive_normalization(self):
+        old = Path(self.directory.name) / 'v6.sqlite'
+        with closing(sqlite3.connect(old)) as connection:
+            connection.create_function('compact_number', 1, store._number)
+            connection.create_function('compact_flag', 1, store._flag)
+            connection.executescript(
+                store.SCHEMA + store.REPLAY_SCHEMA + store.HOURLY_SCHEMA +
+                store.MEASUREMENT_SCHEMA + store.EVIDENCE_SCHEMA + store.NUMERIC_SCHEMA + """
+                INSERT INTO study_day VALUES ('2020-01-02', 'now', 'old');
+                INSERT INTO port_day VALUES ('2020-01-02', 'NY', 0, 0, 0, 0, '{}', '[]');
+                INSERT INTO environment_hour VALUES ('2020-01-02', 'NY', 100, 'currents', 'A',
+                    'A', 1, 2, NULL, 0, NULL, 'toward', NULL, NULL);
+                PRAGMA user_version = 6;
+            """)
+        with closing(store.open_writer(old)) as upgraded:
+            row = upgraded.execute(
+                'SELECT speed_mps, direction_deg, direction_convention FROM environment_hour').fetchone()
+            self.assertEqual(row, (0, None, 'toward'))
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 7)
+
     def test_hourly_values_preserve_zero_missing_and_rollback(self):
         self.results[0]['traffic_hourly'] = [{'hour': 100, 'unique_moving': 0, 'unique_anchored': 2}]
         self.results[0]['environment_hourly'] = {
@@ -174,6 +200,19 @@ class CompactStoreTests(unittest.TestCase):
         self.assertEqual(row, (0.0, None))
         self.assertEqual(self.db.execute(
             'SELECT unique_moving, unique_anchored FROM traffic_hour').fetchone(), (0, 2))
+
+    def test_hourly_observations_are_shared_across_dates(self):
+        self.results[0]['environment_hourly'] = {
+            100: [{'measurement': 'currents', 'station_id': 'A', 'speed_mps': 0,
+                   'direction_deg': None, 'direction_convention': 'toward'}]}
+        self.publish()
+        another = date(2020, 1, 3)
+        other_sources = {'2020-01-03': {'available': True, 'source_url': 'https://example.test/next',
+                                        'sha256': 'next', 'compressed_bytes': 1}}
+        store.publish_day(self.db, another, other_sources, self.results, self.bounds, 'score-8')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM environment_observation').fetchone()[0], 1)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM replay_hour').fetchone()[0], 2)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM environment_hour').fetchone()[0], 2)
 
     def test_invalid_hourly_record_rolls_back_entire_day(self):
         self.results[0]['traffic_hourly'] = [{'hour': 100, 'unique_moving': -1, 'unique_anchored': 0}]
@@ -194,7 +233,8 @@ class CompactStoreTests(unittest.TestCase):
                  details={'likely_near_miss_score_8': '8', 'distance_time_utc': '2020-01-02T00:03:00Z',
                           'likely_near_miss_evidence': 'close pass; maneuver'}),
             dict(base, first_flag_utc='2020-01-02T00:04:00Z',
-                 details={'likely_near_miss_score_8': '6', 'distance_time_utc': '2020-01-02T00:05:00Z'}),
+                 details={'likely_near_miss_score_8': '6', 'distance_time_utc': '2020-01-02T00:05:00Z',
+                          'likely_near_miss_evidence': None}),
         ]
         self.results[0]['environment_hourly'] = {
             0: [{'measurement': 'modeled_wind', 'speed_mps': 0, 'direction_deg': None}]}
@@ -206,6 +246,9 @@ class CompactStoreTests(unittest.TestCase):
             self.assertEqual(len(first['encounters']), 1)
             self.assertEqual(first['encounters'][0]['likely_near_miss_evidence'], 'close pass; maneuver')
             self.assertEqual(db.execute('SELECT count(*) FROM score_reason').fetchone()[0], 2)
+            no_reason = db.execute(
+                'SELECT * FROM encounter WHERE first_flag_utc=?', ('2020-01-02T00:04:00Z',)).fetchone()
+            self.assertIsNone(store.encounter_details(db, no_reason)['likely_near_miss_evidence'])
             typed = db.execute(
                 'SELECT observed_min_separation_in_window_m, maneuver_evidence_a, maneuver_evidence_b '
                 'FROM encounter WHERE encounter_id=?', (first['encounters'][0]['encounter_id'],)).fetchone()

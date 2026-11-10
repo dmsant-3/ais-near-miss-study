@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 import sqlite3
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 NUMERIC_FIELDS = (
     'flag_count', 'minimum_flagged_separation_m', 'minimum_dcpa_m',
@@ -194,6 +194,54 @@ NUMERIC_SCHEMA = (
     + ';\n'
 )
 
+ENVIRONMENT_SCHEMA = """
+CREATE TABLE environment_observation (
+    observation_id INTEGER PRIMARY KEY,
+    fingerprint TEXT NOT NULL UNIQUE,
+    port TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    measurement TEXT NOT NULL,
+    station_id TEXT,
+    latitude REAL,
+    longitude REAL,
+    observation_utc TEXT,
+    speed_mps REAL,
+    direction_deg REAL,
+    direction_convention TEXT,
+    wave_height_m REAL,
+    current_depth_m REAL
+);
+CREATE TABLE replay_hour (
+    ais_date TEXT NOT NULL,
+    port TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    measurement TEXT NOT NULL,
+    station_key TEXT NOT NULL,
+    observation_id INTEGER NOT NULL REFERENCES environment_observation(observation_id),
+    PRIMARY KEY (ais_date, port, hour, measurement, station_key),
+    FOREIGN KEY (ais_date, port) REFERENCES port_day(ais_date, port)
+) WITHOUT ROWID;
+INSERT OR IGNORE INTO environment_observation
+    (fingerprint, port, hour, measurement, station_id, latitude, longitude, observation_utc,
+     speed_mps, direction_deg, direction_convention, wave_height_m, current_depth_m)
+    SELECT compact_environment_hash(port, hour, measurement, station_id, latitude, longitude,
+        observation_utc, speed_mps, direction_deg, direction_convention, wave_height_m, current_depth_m),
+        port, hour, measurement, station_id, latitude, longitude, observation_utc,
+        speed_mps, direction_deg, direction_convention, wave_height_m, current_depth_m
+    FROM environment_hour;
+INSERT INTO replay_hour
+    SELECT e.ais_date, e.port, e.hour, e.measurement, e.station_key, o.observation_id
+    FROM environment_hour e JOIN environment_observation o ON o.fingerprint =
+        compact_environment_hash(e.port, e.hour, e.measurement, e.station_id, e.latitude, e.longitude,
+            e.observation_utc, e.speed_mps, e.direction_deg, e.direction_convention, e.wave_height_m, e.current_depth_m);
+DROP TABLE environment_hour;
+CREATE VIEW environment_hour AS
+    SELECT r.ais_date, r.port, r.hour, r.measurement, r.station_key, o.station_id,
+           o.latitude, o.longitude, o.observation_utc, o.speed_mps, o.direction_deg,
+           o.direction_convention, o.wave_height_m, o.current_depth_m
+    FROM replay_hour r JOIN environment_observation o ON o.observation_id = r.observation_id;
+"""
+
 
 def _number(value):
     try:
@@ -212,15 +260,32 @@ def _flag(value):
     return None
 
 
-def open_writer(path: Path) -> sqlite3.Connection:
+def _environment_hash(*values):
+    normalized = list(values)
+    for index in (4, 5, 7, 8, 10, 11):
+        if normalized[index] is not None:
+            normalized[index] = float(normalized[index])
+    payload = json.dumps(normalized, ensure_ascii=True, allow_nan=False, separators=(',', ':'))
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def open_writer(path: Path, max_bytes: int | None = None) -> sqlite3.Connection:
     """Open or create a versioned database with durable single-writer settings."""
     connection = sqlite3.connect(path, timeout=5)
     try:
         connection.create_function('compact_number', 1, _number)
         connection.create_function('compact_flag', 1, _flag)
+        connection.create_function('compact_environment_hash', 12, _environment_hash)
         connection.execute('PRAGMA foreign_keys = ON')
         connection.execute('PRAGMA journal_mode = DELETE')
         connection.execute('PRAGMA synchronous = FULL')
+        if max_bytes is not None:
+            page_size = connection.execute('PRAGMA page_size').fetchone()[0]
+            allowed_pages = max_bytes // page_size
+            current_pages = connection.execute('PRAGMA page_count').fetchone()[0]
+            if allowed_pages < max(1, current_pages):
+                raise OSError('Compact retained-output limit reached before database initialization')
+            connection.execute(f'PRAGMA max_page_count = {allowed_pages}')
         version = connection.execute('PRAGMA user_version').fetchone()[0]
         if version == 0:
             existing = connection.execute(
@@ -229,32 +294,37 @@ def open_writer(path: Path) -> sqlite3.Connection:
             if existing:
                 raise ValueError('Unversioned database is not an empty compact store')
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA
+                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 1:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA
+                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 2:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA
+                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 3:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA
+                'BEGIN IMMEDIATE;\n' + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 4:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + EVIDENCE_SCHEMA + NUMERIC_SCHEMA
+                'BEGIN IMMEDIATE;\n' + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version == 5:
             connection.executescript(
-                'BEGIN IMMEDIATE;\n' + NUMERIC_SCHEMA
+                'BEGIN IMMEDIATE;\n' + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA
+                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
+            )
+        elif version == 6:
+            connection.executescript(
+                'BEGIN IMMEDIATE;\n' + ENVIRONMENT_SCHEMA
                 + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
             )
         elif version != SCHEMA_VERSION:
@@ -354,13 +424,27 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                 )
             for hour, rows in result.get('environment_hourly', {}).items():
                 for row in rows:
+                    values = (port, int(hour), row['measurement'], row.get('station_id'),
+                              row.get('latitude'), row.get('longitude'), row.get('observation_utc'),
+                              row.get('speed_mps'), row.get('direction_deg'),
+                              row.get('direction_convention'), row.get('wave_height_m'),
+                              row.get('current_depth_m'))
+                    fingerprint = _environment_hash(*values)
                     connection.execute(
-                        'INSERT INTO environment_hour VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                        (day_text, port, int(hour), row['measurement'], row.get('station_id') or '',
-                         row.get('station_id'), row.get('latitude'), row.get('longitude'),
-                         row.get('observation_utc'), row.get('speed_mps'), row.get('direction_deg'),
-                         row.get('direction_convention'), row.get('wave_height_m'),
-                         row.get('current_depth_m')),
+                        'INSERT OR IGNORE INTO environment_observation '
+                        '(fingerprint, port, hour, measurement, station_id, latitude, longitude, '
+                        'observation_utc, speed_mps, direction_deg, direction_convention, wave_height_m, current_depth_m) '
+                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        (fingerprint, *values),
+                    )
+                    observation_id = connection.execute(
+                        'SELECT observation_id FROM environment_observation WHERE fingerprint=?',
+                        (fingerprint,),
+                    ).fetchone()[0]
+                    connection.execute(
+                        'INSERT INTO replay_hour VALUES (?, ?, ?, ?, ?, ?)',
+                        (day_text, port, int(hour), row['measurement'],
+                         row.get('station_id') or '', observation_id),
                     )
             if 'environment_sources' in result:
                 connection.execute(
@@ -383,8 +467,9 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                 event_id = encounter_id(day, port, event['mmsi_a'], event['mmsi_b'],
                                         event['first_flag_utc'])
                 details = dict(event['details'])
-                reasons_present = 'likely_near_miss_evidence' in details
-                evidence = details.pop('likely_near_miss_evidence', '') or ''
+                reasons_present = ('likely_near_miss_evidence' in details
+                                   and details['likely_near_miss_evidence'] is not None)
+                evidence = details.pop('likely_near_miss_evidence') if reasons_present else ''
                 score_7 = details.get('likely_near_miss_score_7')
                 score_8 = details.get('likely_near_miss_score_8')
                 closest = details.get('distance_time_utc')
