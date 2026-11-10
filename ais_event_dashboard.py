@@ -14,6 +14,31 @@ from confirm_near_misses import excluded_vessel_type
 from ais_environment import EnvironmentalDownloader, distance_km
 from types import SimpleNamespace
 
+
+def select_replay_tracks(eligible, tracks):
+    """Select involved vessels and nearby anchored vessels for each replay.
+
+    Input points use the dashboard tuple format. Each track is deduplicated and
+    sorted once, even when multiple encounter windows overlap.
+    """
+    tracks = {ship: sorted(set(points)) for ship, points in tracks.items()}
+    times = {ship: [point[0] for point in points] for ship, points in tracks.items()}
+    for event, (begin, end) in eligible:
+        x, y = float(event['first_flag_longitude']), float(event['first_flag_latitude'])
+        selected = {}
+        for ship, points in tracks.items():
+            ticks = times[ship]
+            window = points[bisect_left(ticks, begin):bisect_right(ticks, end)]
+            involved = ship in (event['mmsi_a'], event['mmsi_b'])
+            if not window or not (involved or any(
+                point[4] and hypot((point[1]-x)*cos(radians(y)), point[2]-y) <= 1/60
+                for point in window
+            )):
+                continue
+            selected[ship] = window
+        yield event, begin, selected
+
+
 def export(day, bbox, ais, folder, scored, node, adjacent=None):
     west, south, east, north = bbox
     start = timestamp(str(day) + 'T00:00:00')
@@ -77,24 +102,13 @@ def export(day, bbox, ais, folder, scored, node, adjacent=None):
     except (OSError, ValueError, KeyError):
         pass
     marine = hourly_environment(day, bbox, start, folder, wind)
-    tracks = {ship: sorted(set(points)) for ship, points in tracks.items()}
-    times = {ship: [p[0] for p in points] for ship, points in tracks.items()}
     with (folder/'event_trajectories.csv').open('w', newline='', encoding='utf-8-sig') as stream:
         writer = csv.writer(stream)
         writer.writerow(['event_id','closest_utc','score','mmsi','ship_name','time_utc',
                          'longitude','latitude','role','wind_mps','wind_from_deg'])
-        for index, (event, (begin, end)) in enumerate(eligible, 1):
-            x, y = float(event['first_flag_longitude']), float(event['first_flag_latitude'])
-            selected = {}
-            for ship, points in tracks.items():
-                ticks = times[ship]
-                window = points[bisect_left(ticks, begin):bisect_right(ticks, end)]
+        for index, (event, begin, selected) in enumerate(select_replay_tracks(eligible, tracks), 1):
+            for ship, window in selected.items():
                 involved = ship in (event['mmsi_a'], event['mmsi_b'])
-                if not window or not (involved or any(
-                    p[4] and hypot((p[1]-x)*cos(radians(y)), p[2]-y) <= 1/60
-                    for p in window)):
-                    continue
-                selected[ship] = window
                 for t, lon, lat, name, _ in window:
                     writer.writerow([index,event['distance_time_utc'],event['likely_near_miss_score_8'],
                                      ship,name,utc(t),lon,lat,
@@ -107,6 +121,21 @@ def export(day, bbox, ais, folder, scored, node, adjacent=None):
     (folder/'event_dashboard.html').write_text(HTML.replace('DATA_PLACEHOLDER',payload), encoding='utf-8')
 
 def hourly_environment(day, bbox, start, folder, wind):
+    marine, report = collect_hourly_environment(day, bbox, start, wind)
+    (folder/'environment_sources.json').write_text(json.dumps(report, indent=2),encoding='utf-8')
+    fields = ['hour_utc','measurement','station_id','latitude','longitude','observation_utc',
+              'speed_mps','direction_deg','direction_convention','wave_height_m','current_depth_m']
+    with (folder/'environment_hourly.csv').open('w',encoding='utf-8',newline='') as stream:
+        writer = csv.DictWriter(stream,fieldnames=fields)
+        writer.writeheader()
+        for hour, rows in marine.items():
+            if start <= hour < start+86400:
+                writer.writerows(rows)
+    return marine
+
+
+def collect_hourly_environment(day, bbox, start, wind):
+    """Collect the hourly replay observations and their source report."""
     args = SimpleNamespace(date=day, bbox=bbox, cache_dir=Path('ais_weather_cache'),
         environment=['waves','currents'], current_stations=None, wave_stations=None,
         max_environment_stations=5, max_waves_distance_km=50,
@@ -136,39 +165,31 @@ def hourly_environment(day, bbox, start, folder, wind):
     stations = report['sources']['currents']['stations']
     report['current_location_target'] = 5
     report['current_locations_selected'] = len(stations)
-    (folder/'environment_sources.json').write_text(json.dumps(report, indent=2),encoding='utf-8')
     buckets = defaultdict(list)
     for row in observations:
         if row['usable']:
             tick = timestamp(row['timestamp_utc'])
             buckets[int(tick//3600)*3600].append((tick,row))
     marine = {}
-    fields = ['hour_utc','measurement','station_id','latitude','longitude','observation_utc',
-              'speed_mps','direction_deg','direction_convention','wave_height_m','current_depth_m']
-    with (folder/'environment_hourly.csv').open('w',encoding='utf-8',newline='') as stream:
-        writer = csv.DictWriter(stream,fieldnames=fields)
-        writer.writeheader()
-        for hour in range(int(start)-3600,int(start)+90000,3600):
-            rows = []
-            for kind, station in [('waves',{}), *[('currents', r) for r in stations]]:
-                candidates = [(t,r) for t,r in buckets[hour] if r['kind'] == kind
-                              and (not station or r['station_id'] == station['id'])]
-                sample = min(candidates,key=lambda item:abs(item[0]-(hour+1800)))[1] if candidates else {}
-                rows.append(dict(hour_utc=utc(hour),measurement=kind,
-                    station_id=sample.get('station_id',station.get('id')),
-                    latitude=sample.get('latitude',station.get('latitude')),
-                    longitude=sample.get('longitude',station.get('longitude')),
-                    observation_utc=sample.get('timestamp_utc'),
-                    speed_mps=sample.get('current_speed_mps'),direction_deg=sample.get('current_direction_deg'),
-                    direction_convention='toward' if kind=='currents' else None,
-                    wave_height_m=sample.get('significant_wave_height_m'),current_depth_m=sample.get('current_depth_m')))
-            speed, direction = wind.get(hour,(None,None))
-            rows.append(dict(hour_utc=utc(hour),measurement='modeled_wind',speed_mps=speed,
-                             direction_deg=direction,direction_convention='from'))
-            marine[hour] = rows
-            if start <= hour < start+86400:
-                writer.writerows(rows)
-    return marine
+    for hour in range(int(start)-3600,int(start)+90000,3600):
+        rows = []
+        for kind, station in [('waves',{}), *[('currents', r) for r in stations]]:
+            candidates = [(t,r) for t,r in buckets[hour] if r['kind'] == kind
+                          and (not station or r['station_id'] == station['id'])]
+            sample = min(candidates,key=lambda item:abs(item[0]-(hour+1800)))[1] if candidates else {}
+            rows.append(dict(hour_utc=utc(hour),measurement=kind,
+                station_id=sample.get('station_id',station.get('id')),
+                latitude=sample.get('latitude',station.get('latitude')),
+                longitude=sample.get('longitude',station.get('longitude')),
+                observation_utc=sample.get('timestamp_utc'),
+                speed_mps=sample.get('current_speed_mps'),direction_deg=sample.get('current_direction_deg'),
+                direction_convention='toward' if kind=='currents' else None,
+                wave_height_m=sample.get('significant_wave_height_m'),current_depth_m=sample.get('current_depth_m')))
+        speed, direction = wind.get(hour,(None,None))
+        rows.append(dict(hour_utc=utc(hour),measurement='modeled_wind',speed_mps=speed,
+                         direction_deg=direction,direction_convention='from'))
+        marine[hour] = rows
+    return marine, report
 
 
 HTML = """<!doctype html><meta charset="utf-8"><title>AIS encounter review</title>
