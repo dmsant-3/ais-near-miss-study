@@ -15,7 +15,7 @@ import re
 
 import ais_compact_store as store
 from count_ais_near_misses import timestamp
-from run_historical_near_miss_study import PORTS, compact_lock, compact_size
+from run_historical_near_miss_study import PORTS, STATUS_RESERVE_BYTES, compact_lock, compact_size
 
 
 def load_day(legacy_root: Path, day: date, retain_audit: bool):
@@ -144,12 +144,13 @@ def import_day(legacy_root: Path, compact_root: Path, day: date,
         if not db_path.exists():
             raise FileNotFoundError('Initialize the compact study before importing')
         non_database = compact_size(compact_root) - db_path.stat().st_size
-        db = store.open_writer(db_path, max_bytes=limit_bytes - non_database - 8192)
+        db = store.open_writer(db_path, max_bytes=limit_bytes - non_database - STATUS_RESERVE_BYTES)
         try:
             if len(store.completed_dates(db)) >= config['study_days']:
                 raise ValueError('Compact study date limit reached')
             page_size = db.execute('PRAGMA page_size').fetchone()[0]
-            max_pages = (limit_bytes - (compact_size(compact_root) - db_path.stat().st_size) - 8192) // page_size
+            max_pages = (limit_bytes - (compact_size(compact_root) - db_path.stat().st_size)
+                         - STATUS_RESERVE_BYTES) // page_size
             if max_pages < db.execute('PRAGMA page_count').fetchone()[0]:
                 raise ValueError('Compact retained-output limit reached')
             db.execute(f'PRAGMA max_page_count = {max_pages}')

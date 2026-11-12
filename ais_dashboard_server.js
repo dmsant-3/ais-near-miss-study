@@ -242,9 +242,15 @@ http.createServer(async (req, res) => {
                     (data.projection.busiest_30_dates_bytes / 1e9).toFixed(2) +
                     ' GB using the busiest measured date. Measurements cover ' +
                     data.projection.measured_dates + ' dates.</p>' : '';
+                const history = Array.isArray(data.status?.history) && data.status.history.length ?
+                    '<details><summary>Recent run history</summary><ul>' +
+                    data.status.history.slice().reverse().map(item => '<li>' + escapeHtml(item.utc) +
+                        ' · ' + escapeHtml(item.event) + (item.date ? ' · ' + escapeHtml(item.date) : '') +
+                        (item.message ? ' · ' + escapeHtml(item.message) : '') + '</li>').join('') +
+                    '</ul></details>' : '';
                 res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>AIS progress</title><h1>AIS progress</h1><p>' +
                     data.completed_days + ' completed AIS dates of ' + Number(data.config.study_days) +
-                    '</p>' + status + active + missing + metrics + '<ul>' + links.join('') + '</ul>' + theme);
+                    '</p>' + status + active + missing + metrics + '<ul>' + links.join('') + '</ul>' + history + theme);
             }
             return;
         }

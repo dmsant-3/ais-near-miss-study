@@ -42,6 +42,7 @@ from ais_event_dashboard import (collect_hourly_environment, collect_replay_trac
 
 BASE = 'https://noaaocm.blob.core.windows.net/ais/csv2/'
 USER_AGENT = 'AISNearMissResearch/1.0 (sequential NOAA AIS analysis)'
+STATUS_RESERVE_BYTES = 32_768
 PORTS = {
     # Local reporting boxes cover port waters and nearby approach areas.
     'Port_of_NY_NJ': (-74.30, 40.30, -73.65, 40.95),
@@ -360,12 +361,33 @@ def compact_status(report_dir: Path):
             raise ValueError('Compact runs require a separate report directory')
     elif any(path.name not in ('.compact.lock', 'run_status.json') for path in report_dir.iterdir()):
         raise ValueError('Compact runs require an empty report directory')
+    target = report_dir / 'run_status.json'
+    history = []
+    if target.exists():
+        try:
+            previous = json.loads(target.read_text(encoding='utf-8'))
+            if isinstance(previous.get('history'), list):
+                for item in previous['history'][-100:]:
+                    if isinstance(item, dict):
+                        history.append({
+                            key: str(item.get(key) or '').encode('ascii', errors='backslashreplace')
+                                 .decode('ascii')[:limit]
+                            for key, limit in (('utc', 40), ('event', 32), ('date', 10), ('message', 80))
+                        })
+        except (OSError, ValueError):
+            pass
     metadata = {}
-    def write(state, message='', **values):
+    def write(state, message='', event=None, **values):
         metadata.update(values)
-        status = {'state': state, 'updated_utc': datetime.now(timezone.utc).isoformat(),
-                  'message': message[:400], **metadata}
-        target = report_dir / 'run_status.json'
+        updated = datetime.now(timezone.utc).isoformat()
+        if event:
+            safe_message = message.encode('ascii', errors='backslashreplace').decode('ascii')[:80]
+            history.append({'utc': updated, 'event': event,
+                            'date': metadata.get('active_date') or metadata.get('latest_date'),
+                            'message': safe_message})
+            del history[:-100]
+        status = {'state': state, 'updated_utc': updated,
+                  'message': message[:400], 'history': history, **metadata}
         temporary = target.with_suffix('.part')
         temporary.write_text(json.dumps(status, ensure_ascii=True) + '\n', encoding='utf-8')
         publish_report(temporary, target)
@@ -373,10 +395,10 @@ def compact_status(report_dir: Path):
     try:
         yield write
     except BaseException as exc:
-        write('failed', f'{type(exc).__name__}: {exc}')
+        write('failed', f'{type(exc).__name__}: {exc}', event='failure')
         raise
     else:
-        write('complete')
+        write('complete', event='run_complete')
 
 
 def run_compact(args) -> int:
@@ -420,7 +442,7 @@ def run_compact(args) -> int:
             raise OSError('Insufficient free space for configured scratch reserves')
         database_bytes = db_path.stat().st_size if db_path.exists() else 0
         allowed_database_bytes = args.retained_limit_bytes - (
-            compact_size(args.report_dir) - database_bytes) - 8192
+            compact_size(args.report_dir) - database_bytes) - STATUS_RESERVE_BYTES
         db = ais_compact_store.open_writer(db_path, max_bytes=allowed_database_bytes)
         try:
             links = available_days(args.start_date, args.end_date,
@@ -500,7 +522,7 @@ def run_compact(args) -> int:
                         del result
                     non_database = compact_size(args.report_dir) - db_path.stat().st_size
                     page_size = db.execute('PRAGMA page_size').fetchone()[0]
-                    max_pages = (args.retained_limit_bytes - non_database - 8192) // page_size
+                    max_pages = (args.retained_limit_bytes - non_database - STATUS_RESERVE_BYTES) // page_size
                     current_pages = db.execute('PRAGMA page_count').fetchone()[0]
                     if max_pages < current_pages:
                         raise OSError('Compact retained-output limit reached')
@@ -513,6 +535,7 @@ def run_compact(args) -> int:
                     ais_compact_store.record_measurement(
                         db, day, retained_before, non_database, meter.work_peak,
                         meter.report_peak, cache.high_water_bytes, meter.interval)
+                    write_status('running', event='day_complete')
                     write_status('running', completed_dates=len(ais_compact_store.completed_dates(db)),
                                  latest_date=day.isoformat(), active_date=None,
                                  active_port=None, stage=None)

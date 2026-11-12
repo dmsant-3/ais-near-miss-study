@@ -189,8 +189,12 @@ class CompactRunnerTests(unittest.TestCase):
                 status = json.loads((root / 'report' / 'run_status.json').read_text(encoding='utf-8'))
                 self.assertEqual(status['active_date'], str(day))
                 self.assertEqual(status['stage'], 'publishing')
+                self.assertEqual(status['history'][-1]['event'], 'failure')
                 self.assertEqual(runner.main(args), 0)
                 self.assertEqual(downloader.call_count, 1)
+                status = json.loads((root / 'report' / 'run_status.json').read_text(encoding='utf-8'))
+                self.assertEqual([item['event'] for item in status['history']],
+                                 ['failure', 'run_complete'])
             with closing(ais_compact_store.open_writer(root / 'report' / 'study.sqlite')) as db:
                 self.assertEqual(ais_compact_store.completed_dates(db), {day})
                 self.assertEqual(db.execute('SELECT count(*) FROM port_day').fetchone()[0], 3)
