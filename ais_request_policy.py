@@ -20,6 +20,27 @@ def configure(directory: Path, gap: float):
     directory.mkdir(parents=True, exist_ok=True)
     _state, _gap = directory, gap
 
+
+def defer_http_status(url: str, status: int, retry_after: str | None = None):
+    """Persist a transient HTTP cooldown for a verified alternate client."""
+    if _state is None or (status not in (408, 429) and not 500 <= status <= 599):
+        return
+    host = urlsplit(url).hostname
+    delay = 3600 if status == 429 else 900
+    if retry_after:
+        try:
+            seconds = int(retry_after) if retry_after.isdigit() else (
+                parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds()
+            delay = max(delay, seconds)
+        except (ValueError, TypeError, OverflowError):
+            pass
+    cooldown = _state / (host + '.cooldown')
+    temporary = cooldown.with_suffix('.part')
+    temporary.write_text(str(time.time() + delay))
+    temporary.replace(cooldown)
+    raise DeferredRequest(f'{host} returned HTTP {status}. Retry after {delay:g} seconds.')
+
+
 def open_request(request, **kwargs):
     if _state is None:
         return urlopen(request, **kwargs)
@@ -34,16 +55,8 @@ def open_request(request, **kwargs):
     except HTTPError as exc:
         if exc.code not in (408, 429) and not 500 <= exc.code <= 599:
             raise
-        delay = 3600 if exc.code == 429 else 900
-        retry = exc.headers.get('Retry-After')
-        if retry:
-            try:
-                seconds = int(retry) if retry.isdigit() else (
-                    parsedate_to_datetime(retry) - datetime.now(timezone.utc)).total_seconds()
-                delay = max(delay, seconds)
-            except (ValueError, TypeError, OverflowError):
-                pass
-        message = f'{host} returned HTTP {exc.code}. Retry after {delay:g} seconds.'
+        defer_http_status(getattr(request, 'full_url', request), exc.code,
+                          exc.headers.get('Retry-After') if exc.headers else None)
     except (URLError, TimeoutError) as exc:
         if isinstance(exc, URLError) and isinstance(exc.reason, ssl.SSLCertVerificationError):
             # Let the weather client try its verified system TLS fallback.

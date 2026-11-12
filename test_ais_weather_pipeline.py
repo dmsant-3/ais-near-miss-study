@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 import ssl
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -38,6 +39,26 @@ class PipelineTests(unittest.TestCase):
                     self.assertEqual(response.read(), b'{}')
                 fallback.assert_called_once()
                 self.assertFalse(list(state.glob('*.cooldown')))
+
+    def test_verified_fallback_preserves_http_cooldown(self):
+        error = URLError(ssl.SSLCertVerificationError(1, 'expired certificate chain'))
+        def curl(command, **kwargs):
+            headers = Path(command[command.index('--dump-header') + 1])
+            headers.write_text('HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7200\r\n\r\n',
+                               encoding='ascii')
+            return SimpleNamespace(returncode=22, stdout=b'', stderr=b'HTTP 429')
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            with patch.object(ais_request_policy, '_state', state), \
+                 patch.object(ais_request_policy, '_gap', 0), \
+                 patch.object(ais_request_policy, '_last', {}), \
+                 patch.object(ais_request_policy, 'urlopen', side_effect=error), \
+                 patch.object(pipeline.shutil, 'which', return_value='system-curl'), \
+                 patch.object(pipeline.subprocess, 'run', side_effect=curl):
+                with self.assertRaises(ais_request_policy.DeferredRequest):
+                    pipeline.request('https://archive-api.open-meteo.com/v1/archive')
+                cooldown = state / 'archive-api.open-meteo.com.cooldown'
+                self.assertGreater(float(cooldown.read_text()) - time.time(), 7190)
 
     def test_system_https_fallback_keeps_verification_enabled(self):
         error = URLError(ssl.SSLCertVerificationError(1,'expired certificate chain'))

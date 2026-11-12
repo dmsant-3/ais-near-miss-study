@@ -42,6 +42,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request
 from ais_request_policy import open_request as urlopen
+import ais_request_policy
 
 import count_ais_near_misses as detector
 import ais_environment as environment
@@ -79,12 +80,22 @@ def verified_curl_request(url, method):
         detector.log('Python certificate validation failed for weather; using system curl '
                      'with certificate verification enabled.')
         _CURL_NOTICE_SHOWN = True
-    command = [executable,'--fail','--silent','--show-error','--max-time','90',
-               '--user-agent',USER_AGENT]
-    if method == 'HEAD':
-        command.append('--head')
-    command.append(url)
-    result = subprocess.run(command,capture_output=True,timeout=100,check=False)
+    with tempfile.TemporaryDirectory(prefix='ais_curl_headers_') as directory:
+        headers = Path(directory) / 'headers.txt'
+        command = [executable,'--fail','--silent','--show-error','--max-time','90',
+                   '--user-agent',USER_AGENT,'--dump-header',str(headers)]
+        if method == 'HEAD':
+            command.append('--head')
+        command.append(url)
+        result = subprocess.run(command,capture_output=True,timeout=100,check=False)
+        if result.returncode and headers.exists():
+            text = headers.read_text(encoding='iso-8859-1')
+            statuses = list(re.finditer(r'(?mi)^HTTP/\S+\s+(\d{3})', text))
+            if statuses:
+                final = statuses[-1]
+                retry = re.search(r'(?mi)^retry-after:\s*([^\r\n]+)', text[final.end():])
+                ais_request_policy.defer_http_status(
+                    url, int(final.group(1)), retry.group(1).strip() if retry else None)
     if result.returncode:
         raise RuntimeError('Verified system HTTPS request failed: '+
                            result.stderr.decode(errors='replace').strip())
