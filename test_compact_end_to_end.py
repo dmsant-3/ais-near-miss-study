@@ -1,5 +1,6 @@
 """Run both report modes through their real processing entry points."""
 from contextlib import closing
+from collections import Counter
 import csv
 from datetime import date
 import json
@@ -95,6 +96,11 @@ class CompactEndToEndTests(unittest.TestCase):
                     with (legacy / 'daily' / str(day) / port / 'scored_candidates.csv').open(
                             encoding='utf-8-sig', newline='') as stream:
                         scored_rows = list(csv.DictReader(stream))
+                    expected_counts = Counter(item['likely_near_miss_classification'] for item in scored_rows)
+                    stored_counts = {item['classification']: item['count'] for item in db.execute(
+                        'SELECT classification, count FROM classification_count WHERE ais_date=? AND port=?',
+                        (str(day), port))}
+                    self.assertEqual(stored_counts, expected_counts)
                     self.assertGreater(len(events), 0, str(scored_rows))
                     with (legacy / 'daily' / str(day) / port / 'traffic_hourly.csv').open(
                             encoding='utf-8', newline='') as stream:

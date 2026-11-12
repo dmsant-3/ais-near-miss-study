@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 import sqlite3
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 NUMERIC_FIELDS = (
     'flag_count', 'minimum_flagged_separation_m', 'minimum_dcpa_m',
@@ -271,6 +271,18 @@ DROP TABLE track_sample;
 ALTER TABLE track_sample_new RENAME TO track_sample;
 """
 
+CLASSIFICATION_SCHEMA = """
+ALTER TABLE port_day ADD COLUMN exclusion_total INTEGER;
+CREATE TABLE classification_count (
+    ais_date TEXT NOT NULL,
+    port TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    count INTEGER NOT NULL CHECK (count >= 0),
+    PRIMARY KEY (ais_date, port, classification),
+    FOREIGN KEY (ais_date, port) REFERENCES port_day(ais_date, port)
+) WITHOUT ROWID;
+"""
+
 
 def _number(value):
     try:
@@ -322,47 +334,16 @@ def open_writer(path: Path, max_bytes: int | None = None) -> sqlite3.Connection:
             ).fetchone()
             if existing:
                 raise ValueError('Unversioned database is not an empty compact store')
-            connection.executescript(
-                'BEGIN IMMEDIATE;\n' + SCHEMA + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
-                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
-            )
-        elif version == 1:
-            connection.executescript(
-                'BEGIN IMMEDIATE;\n' + REPLAY_SCHEMA + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
-                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
-            )
-        elif version == 2:
-            connection.executescript(
-                'BEGIN IMMEDIATE;\n' + HOURLY_SCHEMA + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
-                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
-            )
-        elif version == 3:
-            connection.executescript(
-                'BEGIN IMMEDIATE;\n' + MEASUREMENT_SCHEMA + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
-                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
-            )
-        elif version == 4:
-            connection.executescript(
-                'BEGIN IMMEDIATE;\n' + EVIDENCE_SCHEMA + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
-                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
-            )
-        elif version == 5:
-            connection.executescript(
-                'BEGIN IMMEDIATE;\n' + NUMERIC_SCHEMA + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
-                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
-            )
-        elif version == 6:
-            connection.executescript(
-                'BEGIN IMMEDIATE;\n' + ENVIRONMENT_SCHEMA + VESSEL_SCHEMA
-                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
-            )
-        elif version == 7:
-            connection.executescript(
-                'BEGIN IMMEDIATE;\n' + VESSEL_SCHEMA
-                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
-            )
-        elif version != SCHEMA_VERSION:
+        if not 0 <= version <= SCHEMA_VERSION:
             raise ValueError(f'Unsupported compact store schema version: {version}')
+        migrations = (SCHEMA, REPLAY_SCHEMA, HOURLY_SCHEMA, MEASUREMENT_SCHEMA,
+                      EVIDENCE_SCHEMA, NUMERIC_SCHEMA, ENVIRONMENT_SCHEMA,
+                      VESSEL_SCHEMA, CLASSIFICATION_SCHEMA)
+        if version < SCHEMA_VERSION:
+            connection.executescript(
+                'BEGIN IMMEDIATE;\n' + ''.join(migrations[version:])
+                + f'\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;'
+            )
         return connection
     except Exception:
         connection.close()
@@ -445,13 +426,26 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                 if result['port'] != port:
                     raise ValueError('Staged port result does not match its declared port')
             connection.execute(
-                'INSERT INTO port_day VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                'INSERT INTO port_day (ais_date, port, potential_events, likely_for_human_review, '
+                'elevated_priority_candidates, lower_priority_candidates, detector_quality, bbox_json) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                 (day_text, port, result['potential_events'],
                  result['likely_for_human_review'], result['elevated_priority_candidates'],
                  result['lower_priority_candidates'],
                  json.dumps(result['detector_quality'], allow_nan=False, sort_keys=True),
                  json.dumps(port_bounds[port], allow_nan=False)),
             )
+            if 'classification_counts' in result:
+                counts = result['classification_counts']
+                excluded = sum(count for label, count in counts.items()
+                               if label.startswith('excluded_') or label == 'separate_tugboat_review')
+                connection.execute(
+                    'UPDATE port_day SET exclusion_total=? WHERE ais_date=? AND port=?',
+                    (excluded, day_text, port),
+                )
+                for label, count in counts.items():
+                    connection.execute('INSERT INTO classification_count VALUES (?, ?, ?, ?)',
+                                       (day_text, port, label, count))
             for row in result.get('traffic_hourly', ()):
                 connection.execute(
                     'INSERT INTO traffic_hour VALUES (?, ?, ?, ?, ?)',

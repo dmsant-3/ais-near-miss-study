@@ -227,6 +227,8 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
             'lower_priority_candidates': classifications.get('lower_priority_candidate', 0),
             'detector_quality': detection_summary.get('quality', {}),
             'scored_file': scored.name if scored.exists() else None}
+    if compact:
+        result['classification_counts'] = classifications
     if not compact:
         export(day, bbox, ais, port_dir, scored, node, adjacent)
         return result

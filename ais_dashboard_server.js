@@ -218,7 +218,8 @@ http.createServer(async (req, res) => {
                     '<li><a href="/' + row.ais_date + '/' + row.port + '">' +
                     row.ais_date + ' · ' + row.port.replaceAll('_', ' ') + '</a> — ' +
                     row.potential_events + ' screened, ' + row.likely_for_human_review +
-                    ' for review · <a href="/api/export/daily?date=' + row.ais_date + '&amp;port=' + row.port +
+                    ' for review' + (row.exclusion_total == null ? '' : ', ' + row.exclusion_total + ' excluded') +
+                    ' · <a href="/api/export/daily?date=' + row.ais_date + '&amp;port=' + row.port +
                     '">daily CSV</a> · <a href="/api/export/candidates?date=' + row.ais_date +
                     '&amp;port=' + row.port + '">candidates CSV</a> · <a href="/api/export/likely?date=' +
                     row.ais_date + '&amp;port=' + row.port + '">review CSV</a> · <a href="/api/export/traffic?date=' +

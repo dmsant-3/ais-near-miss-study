@@ -25,10 +25,16 @@ def open_reader(path: Path) -> sqlite3.Connection:
 
 def progress(connection: sqlite3.Connection) -> dict:
     rows = connection.execute(
-        'SELECT ais_date, port, potential_events, likely_for_human_review '
+        'SELECT ais_date, port, potential_events, likely_for_human_review, exclusion_total '
         'FROM port_day ORDER BY ais_date DESC, port'
     )
     ports = [dict(row) for row in rows]
+    by_port = {(row['ais_date'], row['port']): row for row in ports}
+    for row in connection.execute(
+            'SELECT ais_date, port, classification, count FROM classification_count '
+            'ORDER BY ais_date, port, classification'):
+        target = by_port[(row['ais_date'], row['port'])]
+        target.setdefault('classification_counts', {})[row['classification']] = row['count']
     measurements = [dict(row) for row in connection.execute(
         'SELECT * FROM storage_measurement ORDER BY ais_date')]
     projections = None

@@ -31,7 +31,8 @@ class MigrationTests(unittest.TestCase):
             event = {'mmsi_a': '111', 'mmsi_b': '222', 'first_flag_utc': '2020-01-02T00:05:00Z',
                      'distance_time_utc': '2020-01-02T00:10:00Z', 'window_start_utc': utc(tick - 1800),
                      'likely_near_miss_score_8': '8', 'first_flag_longitude': '0',
-                     'first_flag_latitude': '0', 'tracks': {'111': [[tick, 0, 0, 'Ship', False]]}}
+                     'first_flag_latitude': '0', 'likely_near_miss_classification': 'elevated_priority_candidate',
+                     'tracks': {'111': [[tick, 0, 0, 'Ship', False]]}}
             for port in PORTS:
                 port_dir = daily / port
                 port_dir.mkdir(parents=True)
@@ -39,6 +40,11 @@ class MigrationTests(unittest.TestCase):
                 (port_dir / 'event_dashboard.html').write_text(
                     '<script type="application/json" id="data">' + json.dumps(data) + '</script>',
                     encoding='utf-8')
+                scored = {key: value for key, value in event.items() if key != 'tracks'}
+                with (port_dir / 'scored_candidates.csv').open('w', encoding='utf-8', newline='') as stream:
+                    writer = csv.DictWriter(stream, fieldnames=list(scored))
+                    writer.writeheader()
+                    writer.writerow(scored)
                 with (port_dir / 'traffic_hourly.csv').open('w', encoding='utf-8', newline='') as stream:
                     writer = csv.writer(stream)
                     writer.writerow(['window_start_utc', 'unique_moving', 'unique_anchored'])

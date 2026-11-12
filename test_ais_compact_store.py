@@ -57,6 +57,20 @@ class CompactStoreTests(unittest.TestCase):
         self.publish()
         self.assertEqual(store.completed_dates(self.db), {self.day})
 
+    def test_classification_counts_include_exclusion_totals(self):
+        self.results[0]['potential_events'] = 6
+        self.results[0]['classification_counts'] = {
+            'excluded_barge_or_tug': 2, 'excluded_insufficient_track_coverage': 1,
+            'elevated_priority_candidate': 3,
+        }
+        self.publish()
+        with closing(reader.open_reader(self.path)) as db:
+            port = next(row for row in reader.progress(db)['ports'] if row['port'] == 'NY')
+            self.assertEqual(port['exclusion_total'], 3)
+            self.assertEqual(port['classification_counts']['excluded_barge_or_tug'], 2)
+            untouched = next(row for row in reader.progress(db)['ports'] if row['port'] == 'LA')
+            self.assertIsNone(untouched['exclusion_total'])
+
     def test_missing_or_duplicate_port_rejected(self):
         self.results[-1]['port'] = 'NY'
         with self.assertRaises(ValueError):
@@ -164,7 +178,7 @@ class CompactStoreTests(unittest.TestCase):
             ''')
         with closing(store.open_writer(old)) as upgraded:
             self.assertEqual(store.completed_dates(upgraded), {date(2020, 1, 1)})
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 8)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 9)
 
     def test_v3_database_adds_measurements(self):
         old = Path(self.directory.name) / 'v3.sqlite'
@@ -172,7 +186,7 @@ class CompactStoreTests(unittest.TestCase):
             connection.executescript(store.SCHEMA + store.REPLAY_SCHEMA + store.HOURLY_SCHEMA
                                      + 'PRAGMA user_version = 3;')
         with closing(store.open_writer(old)) as upgraded:
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 8)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 9)
             self.assertEqual(upgraded.execute('SELECT count(*) FROM storage_measurement').fetchone()[0], 0)
 
     def test_v4_database_keeps_legacy_evidence_during_upgrade(self):
@@ -212,7 +226,7 @@ class CompactStoreTests(unittest.TestCase):
             row = upgraded.execute(
                 'SELECT speed_mps, direction_deg, direction_convention FROM environment_hour').fetchone()
             self.assertEqual(row, (0, None, 'toward'))
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 8)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 9)
 
     def test_v7_vessel_names_survive_normalization(self):
         old = Path(self.directory.name) / 'v7.sqlite'
@@ -232,7 +246,24 @@ class CompactStoreTests(unittest.TestCase):
             self.assertEqual(upgraded.execute(
                 'SELECT n.mmsi, n.name FROM track_sample t JOIN vessel_name n ON n.name_id=t.name_id'
             ).fetchone(), ('111', 'Ship'))
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 8)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 9)
+
+    def test_v8_upgrade_leaves_unknown_exclusion_counts_unset(self):
+        old = Path(self.directory.name) / 'v8.sqlite'
+        with closing(sqlite3.connect(old)) as connection:
+            connection.create_function('compact_number', 1, store._number)
+            connection.create_function('compact_flag', 1, store._flag)
+            connection.create_function('compact_environment_hash', 12, store._environment_hash)
+            connection.executescript(
+                store.SCHEMA + store.REPLAY_SCHEMA + store.HOURLY_SCHEMA + store.MEASUREMENT_SCHEMA +
+                store.EVIDENCE_SCHEMA + store.NUMERIC_SCHEMA + store.ENVIRONMENT_SCHEMA + store.VESSEL_SCHEMA + """
+                INSERT INTO study_day VALUES ('2020-01-02', 'now', 'old');
+                INSERT INTO port_day VALUES ('2020-01-02', 'NY', 1, 0, 0, 0, '{}', '[]');
+                PRAGMA user_version = 8;
+            """)
+        with closing(store.open_writer(old)) as upgraded:
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 9)
+            self.assertIsNone(upgraded.execute('SELECT exclusion_total FROM port_day').fetchone()[0])
 
     def test_hourly_values_preserve_zero_missing_and_rollback(self):
         hour = int(datetime(2020, 1, 2, tzinfo=timezone.utc).timestamp())

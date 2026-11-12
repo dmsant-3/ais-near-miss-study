@@ -6,6 +6,7 @@ per-port hourly traffic and embedded replay data. Files remain in place.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 from datetime import date, datetime, timezone
 import json
@@ -78,10 +79,14 @@ def load_day(legacy_root: Path, day: date, retain_audit: bool):
                            'first_flag_utc': event['first_flag_utc'], 'window_start': start,
                            'window_end': end, 'details': event, 'vessels': vessels})
         scored = port_dir / 'scored_candidates.csv'
+        classification_counts = Counter()
+        scored_count = 0
         if scored.exists():
             with scored.open(encoding='utf-8-sig', newline='') as stream:
                 for row in csv.DictReader(stream):
                     label = row['likely_near_miss_classification']
+                    classification_counts[label] += 1
+                    scored_count += 1
                     if not retain_audit and label not in (
                             'likely_near_miss_for_human_review', 'elevated_priority_candidate'):
                         continue
@@ -95,6 +100,8 @@ def load_day(legacy_root: Path, day: date, retain_audit: bool):
                                    'first_flag_utc': row['first_flag_utc'], 'window_start': begin,
                                    'window_end': max(begin, end),
                                    'details': {**row, '_compact_replay': False}, 'vessels': []})
+        if scored_count != int(original['potential_events']):
+            raise ValueError(f'Legacy scored count does not match the summary for {port}')
         with (port_dir / 'traffic_hourly.csv').open(encoding='utf-8-sig', newline='') as stream:
             traffic = [{'hour': int(timestamp(row['window_start_utc'])),
                         'unique_moving': int(row['unique_moving']),
@@ -116,7 +123,8 @@ def load_day(legacy_root: Path, day: date, retain_audit: bool):
             'sample_source_assignment': 'UTC date of sample, verified against recorded source dates'}
         results.append({**original, 'encounters': events, 'track_samples': list(samples.values()),
                         'traffic_hourly': traffic, 'environment_hourly': marine,
-                        'environment_sources': environment_sources})
+                        'environment_sources': environment_sources,
+                        'classification_counts': dict(classification_counts)})
     if {item['port'] for item in results} != set(PORTS):
         raise ValueError('Legacy day must contain all configured ports')
     return sources, results, expected
