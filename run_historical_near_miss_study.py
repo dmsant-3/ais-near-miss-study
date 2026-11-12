@@ -446,6 +446,8 @@ def run_compact(args) -> int:
                     print(day, url)
                 return 0
             for index, (day, url) in enumerate(pending):
+                write_status('running', active_date=day.isoformat(), active_port=None,
+                             stage='downloading')
                 same_volume = args.work_dir.stat().st_dev == args.report_dir.stat().st_dev
                 work_reserve = args.work_reserve_bytes + (args.report_reserve_bytes if same_volume else 0)
                 if (shutil.disk_usage(args.work_dir).free < work_reserve
@@ -483,6 +485,8 @@ def run_compact(args) -> int:
                     sources[day.isoformat()] = {'available': True, **download(url, ais, work_reserve)}
                     results = []
                     for port, bbox in PORTS.items():
+                        write_status('running', active_date=day.isoformat(), active_port=port,
+                                     stage='analyzing')
                         result = analyze_port(day, port, bbox, ais, temp, args.node, adjacent,
                                               compact=True, cache_policy=cache,
                                               retain_audit_candidates=args.retain_audit_candidates,
@@ -499,6 +503,8 @@ def run_compact(args) -> int:
                     if max_pages < current_pages:
                         raise OSError('Compact retained-output limit reached')
                     db.execute(f'PRAGMA max_page_count = {max_pages}')
+                    write_status('running', active_date=day.isoformat(), active_port=None,
+                                 stage='publishing')
                     ais_compact_store.publish_day(db, day, sources, results, PORTS, scoring_version)
                     meter.sample()
                     non_database = compact_size(args.report_dir) - db_path.stat().st_size
@@ -506,7 +512,8 @@ def run_compact(args) -> int:
                         db, day, retained_before, non_database, meter.work_peak,
                         meter.report_peak, cache.high_water_bytes, meter.interval)
                     write_status('running', completed_dates=len(ais_compact_store.completed_dates(db)),
-                                 latest_date=day.isoformat())
+                                 latest_date=day.isoformat(), active_date=None,
+                                 active_port=None, stage=None)
                 if index + 1 < len(pending) and args.pause_seconds:
                     time.sleep(args.pause_seconds)
             return 0

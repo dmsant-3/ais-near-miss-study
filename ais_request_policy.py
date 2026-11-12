@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+import ssl
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -44,6 +45,9 @@ def open_request(request, **kwargs):
                 pass
         message = f'{host} returned HTTP {exc.code}. Retry after {delay:g} seconds.'
     except (URLError, TimeoutError) as exc:
+        if isinstance(exc, URLError) and isinstance(exc.reason, ssl.SSLCertVerificationError):
+            # Let the weather client try its verified system TLS fallback.
+            raise
         delay = 900
         message = f'{host} request failed ({exc}). Retry after {delay} seconds.'
     temp = cooldown.with_suffix('.part')

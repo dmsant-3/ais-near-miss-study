@@ -229,6 +229,10 @@ http.createServer(async (req, res) => {
                     ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
                 const status = data.status ? '<p>Latest run: ' + escapeHtml(data.status.state) +
                     (data.status.message ? ' — ' + escapeHtml(data.status.message) : '') + '</p>' : '';
+                const active = data.status?.active_date ? '<p>Processing ' +
+                    escapeHtml(data.status.active_date) +
+                    (data.status.active_port ? ' · ' + escapeHtml(data.status.active_port.replaceAll('_', ' ')) : '') +
+                    (data.status.stage ? ' · ' + escapeHtml(data.status.stage) : '') + '</p>' : '';
                 const missing = data.status?.missing_count ? '<p>' +
                     Number(data.status.missing_count) + ' dates absent from the NOAA index. First dates: ' +
                     data.status.missing_dates.map(escapeHtml).join(', ') + '</p>' : '';
@@ -239,7 +243,7 @@ http.createServer(async (req, res) => {
                     data.projection.measured_dates + ' dates.</p>' : '';
                 res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>AIS progress</title><h1>AIS progress</h1><p>' +
                     data.completed_days + ' completed AIS dates of ' + Number(data.config.study_days) +
-                    '</p>' + status + missing + metrics + '<ul>' + links.join('') + '</ul>' + theme);
+                    '</p>' + status + active + missing + metrics + '<ul>' + links.join('') + '</ul>' + theme);
             }
             return;
         }

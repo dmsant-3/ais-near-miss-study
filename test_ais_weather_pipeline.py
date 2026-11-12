@@ -13,6 +13,7 @@ from urllib.error import URLError
 
 import ais_weather_pipeline as pipeline
 import count_ais_near_misses as detector
+import ais_request_policy
 
 
 def weather_fixture():
@@ -24,6 +25,20 @@ def weather_fixture():
 
 
 class PipelineTests(unittest.TestCase):
+    def test_cron_certificate_failure_reaches_verified_fallback_without_cooldown(self):
+        error = URLError(ssl.SSLCertVerificationError(1, 'expired certificate chain'))
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            with patch.object(ais_request_policy, '_state', state), \
+                 patch.object(ais_request_policy, '_gap', 0), \
+                 patch.object(ais_request_policy, '_last', {}), \
+                 patch.object(ais_request_policy, 'urlopen', side_effect=error), \
+                 patch.object(pipeline, 'verified_curl_request', return_value=io.BytesIO(b'{}')) as fallback:
+                with pipeline.request('https://archive-api.open-meteo.com/v1/archive') as response:
+                    self.assertEqual(response.read(), b'{}')
+                fallback.assert_called_once()
+                self.assertFalse(list(state.glob('*.cooldown')))
+
     def test_system_https_fallback_keeps_verification_enabled(self):
         error = URLError(ssl.SSLCertVerificationError(1,'expired certificate chain'))
         with patch.object(pipeline,'urlopen',side_effect=error), \

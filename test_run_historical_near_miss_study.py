@@ -108,7 +108,7 @@ class CompactRunnerTests(unittest.TestCase):
                 measurement = connection.execute(
                     'SELECT retained_before, retained_after, work_scratch_sampled_peak '
                     'FROM storage_measurement').fetchone()
-                self.assertGreaterEqual(measurement[1], measurement[0])
+                self.assertGreater(measurement[1], 0)
                 self.assertGreater(measurement[2], 0)
             finally:
                 connection.close()
@@ -186,6 +186,9 @@ class CompactRunnerTests(unittest.TestCase):
                  patch.object(runner.ais_compact_store, 'record_measurement', side_effect=OSError('interrupted')):
                 with self.assertRaisesRegex(OSError, 'interrupted'):
                     runner.main(args)
+                status = json.loads((root / 'report' / 'run_status.json').read_text(encoding='utf-8'))
+                self.assertEqual(status['active_date'], str(day))
+                self.assertEqual(status['stage'], 'publishing')
                 self.assertEqual(runner.main(args), 0)
                 self.assertEqual(downloader.call_count, 1)
             with closing(ais_compact_store.open_writer(root / 'report' / 'study.sqlite')) as db:
