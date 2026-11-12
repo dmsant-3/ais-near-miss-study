@@ -300,6 +300,8 @@ function draw(){
  }
  const wave=marine.find(r=>r.measurement==='waves')?.wave_height_m;
  details.textContent=new Date(end*1000).toISOString()+' · '+(w&&w.every(v=>v!==null)?'Wind '+w[0]+' m/s from '+w[1]+'°':'Wind unavailable')+' · Wave height '+(wave==null?'unavailable':wave+' m');
+ if(e.first_flag_utc) details.textContent += ' · First flag '+e.first_flag_utc;
+ if(e.distance_time_utc) details.textContent += ' · Closest approach '+e.distance_time_utc;
  c.fillStyle='#142536';c.font='16px system-ui';c.fillText(details.textContent,20,25);
 }
 function selectEvent(){const e=d.events[sel.value];if(e){slider.min=(Date.parse(e.window_start_utc)-Date.parse(e.distance_time_utc))/60000;slider.value=10;}draw();}

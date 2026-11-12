@@ -430,6 +430,13 @@ http.createServer(async (req, res) => {
  c.stroke();
  c.restore();`;
         const encounterEffect = `
+ const flagTime = Date.parse(e.first_flag_utc) / 1000;
+ if(Number.isFinite(flagTime) && end >= flagTime && end <= flagTime + 120){
+  const [fx,fy] = xy([0,x,y]);
+  c.save();c.strokeStyle='#ad5b00';c.fillStyle='#5c3000';c.lineWidth=3;
+  c.beginPath();c.arc(fx,fy,16,0,2*Math.PI);c.stroke();
+  c.font='bold 14px system-ui';c.fillText('First flag',fx+20,fy-15);c.restore();
+ }
  const elapsed = end-t;
  if(elapsed >= 0 && elapsed <= 120){
   function closestPosition(id){

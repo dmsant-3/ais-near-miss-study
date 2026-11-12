@@ -79,6 +79,8 @@ class CompactDashboardTests(unittest.TestCase):
                     self.assertIn('loadSelected', shell)
                     self.assertIn('Review scores · UTC', shell)
                     self.assertNotIn('All listed encounters scored 7 out of 7', shell)
+                    self.assertIn('First flag', shell)
+                    self.assertIn('Closest approach', shell)
                 request = Request(base + f'/api/export/candidates?date={day}&port={port}',
                                   headers={'Accept-Encoding': 'gzip'})
                 with urlopen(request, timeout=10) as response:
