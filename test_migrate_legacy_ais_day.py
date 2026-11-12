@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
+from collections import namedtuple
 
 import ais_compact_store as store
 from count_ais_near_misses import timestamp, utc
@@ -64,6 +66,10 @@ class MigrationTests(unittest.TestCase):
             with closing(store.open_writer(compact / 'study.sqlite')) as db:
                 self.assertEqual(store.completed_dates(db), set())
             summary_path.write_text(json.dumps(summary), encoding='utf-8')
+            usage = namedtuple('Usage', 'total used free')(100, 99, 1)
+            with patch('migrate_legacy_ais_day.shutil.disk_usage', return_value=usage):
+                with self.assertRaisesRegex(OSError, 'migration report reserve'):
+                    import_day(legacy, compact, day, report_reserve_bytes=2)
             import_day(legacy, compact, day)
             with closing(store.open_writer(compact / 'study.sqlite')) as db:
                 self.assertEqual(store.completed_dates(db), {day})

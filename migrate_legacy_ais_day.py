@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 import re
+import shutil
 
 import ais_compact_store as store
 from count_ais_near_misses import timestamp
@@ -131,10 +132,13 @@ def load_day(legacy_root: Path, day: date, retain_audit: bool):
 
 
 def import_day(legacy_root: Path, compact_root: Path, day: date,
-               retain_audit: bool = False, limit_bytes: int = 10_000_000_000):
+               retain_audit: bool = False, limit_bytes: int = 10_000_000_000,
+               report_reserve_bytes: int = 0):
     """Verify and import one date. The caller must initialize the compact study."""
     sources, results, expected = load_day(legacy_root, day, retain_audit)
     with compact_lock(compact_root):
+        if report_reserve_bytes < 0 or shutil.disk_usage(compact_root).free < report_reserve_bytes:
+            raise OSError('Insufficient free space for the migration report reserve')
         config = json.loads((compact_root / 'run_config.json').read_text(encoding='utf-8'))
         if config.get('output_format') != 'compact' or config.get('retain_audit_candidates', False) != retain_audit:
             raise ValueError('Import settings must match the compact report configuration')
@@ -170,9 +174,13 @@ def main():
     parser.add_argument('date', type=date.fromisoformat)
     parser.add_argument('--retain-audit-candidates', action='store_true')
     parser.add_argument('--retained-limit-bytes', type=int, default=10_000_000_000)
+    parser.add_argument('--report-reserve-bytes', type=int, required=True,
+                        help='Measured free-space reserve for the database journal')
     args = parser.parse_args()
+    if args.report_reserve_bytes <= 0:
+        parser.error('--report-reserve-bytes must be positive')
     import_day(args.legacy_root, args.compact_root, args.date,
-               args.retain_audit_candidates, args.retained_limit_bytes)
+               args.retain_audit_candidates, args.retained_limit_bytes, args.report_reserve_bytes)
     print(f'Imported and verified {args.date}; legacy files remain in place.')
 
 
