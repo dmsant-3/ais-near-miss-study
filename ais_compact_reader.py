@@ -186,6 +186,8 @@ async function loadSelected() {
  }
 }
 async function loadPage() {
+ if (more.disabled) return;
+ more.disabled = true;
  const url = '/api/days/' + encodeURIComponent(aisDay) + '/ports/' +
      encodeURIComponent(aisPort) + '/encounters?limit=50' +
      (pageCursor ? '&cursor=' + encodeURIComponent(pageCursor) : '');
@@ -206,6 +208,7 @@ async function loadPage() {
   if (wasEmpty && d.events.length) loadSelected();
   else if (!d.events.length) draw();
  } catch (error) { details.textContent = error.message; }
+ finally { more.disabled = false; }
 }
 const [aisDay, aisPort] = location.pathname.split('/').filter(Boolean);
 const more = document.createElement('button');
