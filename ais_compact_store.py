@@ -603,6 +603,23 @@ def encounter_details(connection: sqlite3.Connection, row) -> dict:
     return details
 
 
+REPLAY_TRACKS_SQL = """
+        SELECT DISTINCT t.mmsi, t.tick, t.longitude, t.latitude, n.name, t.anchored
+        FROM ais_source AS s
+        CROSS JOIN source_file AS f
+        CROSS JOIN encounter_vessel AS v
+        CROSS JOIN track_sample AS t
+        CROSS JOIN vessel_name AS n
+        WHERE s.ais_date = ? AND s.available = 1
+          AND f.source_date = s.source_date AND f.sha256 = s.sha256
+          AND v.ais_date = s.ais_date AND v.port = ? AND v.encounter_id = ?
+          AND t.port = v.port AND t.source_id = f.source_id AND t.mmsi = v.mmsi
+          AND n.name_id = t.name_id
+          AND t.tick BETWEEN ? AND ?
+        ORDER BY t.mmsi, t.tick, t.longitude, t.latitude, n.name, t.anchored
+"""
+
+
 def replay_tracks(connection: sqlite3.Connection, day: date, port: str,
                   event_id: str) -> dict[str, list[list]]:
     """Return selected vessel samples from the sources available on this date."""
@@ -614,19 +631,7 @@ def replay_tracks(connection: sqlite3.Connection, day: date, port: str,
     ).fetchone()
     if event is None:
         raise KeyError(event_id)
-    rows = connection.execute("""
-        SELECT DISTINCT t.mmsi, t.tick, t.longitude, t.latitude, n.name, t.anchored
-        FROM encounter_vessel AS v
-        JOIN track_sample AS t ON t.port = v.port AND t.mmsi = v.mmsi
-        JOIN vessel_name AS n ON n.name_id = t.name_id
-        JOIN source_file AS f ON f.source_id = t.source_id
-        JOIN ais_source AS s ON s.ais_date = v.ais_date
-             AND s.source_date = f.source_date AND s.sha256 = f.sha256
-             AND s.available = 1
-        WHERE v.ais_date = ? AND v.port = ? AND v.encounter_id = ?
-          AND t.tick BETWEEN ? AND ?
-        ORDER BY t.mmsi, t.tick, t.longitude, t.latitude, n.name, t.anchored
-    """, (day_text, port, event_id, *event))
+    rows = connection.execute(REPLAY_TRACKS_SQL, (day_text, port, event_id, *event))
     tracks = {}
     for mmsi, tick, longitude, latitude, name, anchored in rows:
         tracks.setdefault(mmsi, []).append([tick, longitude, latitude, name, bool(anchored)])

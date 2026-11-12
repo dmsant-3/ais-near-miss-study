@@ -138,6 +138,15 @@ class CompactStoreTests(unittest.TestCase):
             self.assertEqual([point[0] for point in tracks['111']], [99, 100, 100])
             self.assertEqual([point[3] for point in tracks['111']], ['Ship', 'Renamed', 'Ship'])
 
+    def test_replay_query_uses_source_vessel_and_time_index(self):
+        plan = [row[3] for row in self.db.execute(
+            'EXPLAIN QUERY PLAN ' + store.REPLAY_TRACKS_SQL,
+            (str(self.day), 'NY', 'encounter', 0, 100))]
+        track_search = next(line for line in plan if 'SEARCH t ' in line)
+        self.assertIn('source_id=?', track_search)
+        self.assertIn('mmsi=?', track_search)
+        self.assertIn('tick>?', track_search)
+
     def test_invalid_sample_source_rolls_back_publication(self):
         self.results[0]['track_samples'] = [
             {'source_date': '2020-01-01', 'mmsi': '111', 'tick': 1,
