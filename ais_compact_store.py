@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 import sqlite3
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 NUMERIC_FIELDS = (
     'flag_count', 'minimum_flagged_separation_m', 'minimum_dcpa_m',
@@ -283,6 +283,36 @@ CREATE TABLE classification_count (
 ) WITHOUT ROWID;
 """
 
+SOURCE_ID_SCHEMA = """
+CREATE TABLE source_file_new (
+    source_id INTEGER PRIMARY KEY,
+    source_date TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    UNIQUE (source_date, sha256)
+);
+INSERT INTO source_file_new (source_date, sha256)
+    SELECT source_date, sha256 FROM source_file;
+CREATE TABLE track_sample_new (
+    port TEXT NOT NULL,
+    source_id INTEGER NOT NULL REFERENCES source_file_new(source_id),
+    mmsi TEXT NOT NULL,
+    tick INTEGER NOT NULL,
+    longitude REAL NOT NULL,
+    latitude REAL NOT NULL,
+    name_id INTEGER NOT NULL REFERENCES vessel_name(name_id),
+    anchored INTEGER NOT NULL CHECK (anchored IN (0, 1)),
+    PRIMARY KEY (port, source_id, mmsi, tick, longitude, latitude, name_id, anchored)
+) WITHOUT ROWID;
+INSERT INTO track_sample_new
+    SELECT t.port, f.source_id, t.mmsi, t.tick, t.longitude, t.latitude, t.name_id, t.anchored
+    FROM track_sample t JOIN source_file_new f
+        ON f.source_date=t.source_date AND f.sha256=t.sha256;
+DROP TABLE track_sample;
+DROP TABLE source_file;
+ALTER TABLE source_file_new RENAME TO source_file;
+ALTER TABLE track_sample_new RENAME TO track_sample;
+"""
+
 
 def _number(value):
     try:
@@ -338,7 +368,7 @@ def open_writer(path: Path, max_bytes: int | None = None) -> sqlite3.Connection:
             raise ValueError(f'Unsupported compact store schema version: {version}')
         migrations = (SCHEMA, REPLAY_SCHEMA, HOURLY_SCHEMA, MEASUREMENT_SCHEMA,
                       EVIDENCE_SCHEMA, NUMERIC_SCHEMA, ENVIRONMENT_SCHEMA,
-                      VESSEL_SCHEMA, CLASSIFICATION_SCHEMA)
+                      VESSEL_SCHEMA, CLASSIFICATION_SCHEMA, SOURCE_ID_SCHEMA)
         if version < SCHEMA_VERSION:
             connection.executescript(
                 'BEGIN IMMEDIATE;\n' + ''.join(migrations[version:])
@@ -404,6 +434,7 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
             'INSERT INTO study_day VALUES (?, ?, ?)',
             (day_text, datetime.now(timezone.utc).isoformat(), scoring_version),
         )
+        source_ids = {}
         for source_date, source in sources.items():
             date.fromisoformat(source_date)
             available = source['available']
@@ -415,8 +446,12 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                  source.get('sha256'), source.get('compressed_bytes')),
             )
             if available:
-                connection.execute('INSERT OR IGNORE INTO source_file VALUES (?, ?)',
+                connection.execute('INSERT OR IGNORE INTO source_file (source_date, sha256) VALUES (?, ?)',
                                    (source_date, source['sha256']))
+                source_ids[source_date] = connection.execute(
+                    'SELECT source_id FROM source_file WHERE source_date=? AND sha256=?',
+                    (source_date, source['sha256']),
+                ).fetchone()[0]
         vessel_names = {}
         for result in port_results:
             port = result['port']
@@ -494,8 +529,8 @@ def publish_day(connection: sqlite3.Connection, day: date, sources: dict,
                         'SELECT name_id FROM vessel_name WHERE mmsi=? AND name=?', name_key,
                     ).fetchone()[0]
                 connection.execute(
-                    'INSERT OR IGNORE INTO track_sample VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    (port, source_date, source['sha256'], sample['mmsi'], sample['tick'],
+                    'INSERT OR IGNORE INTO track_sample VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    (port, source_ids[source_date], sample['mmsi'], sample['tick'],
                      sample['longitude'], sample['latitude'], vessel_names[name_key],
                      int(sample['anchored'])),
                 )
@@ -584,8 +619,9 @@ def replay_tracks(connection: sqlite3.Connection, day: date, port: str,
         FROM encounter_vessel AS v
         JOIN track_sample AS t ON t.port = v.port AND t.mmsi = v.mmsi
         JOIN vessel_name AS n ON n.name_id = t.name_id
+        JOIN source_file AS f ON f.source_id = t.source_id
         JOIN ais_source AS s ON s.ais_date = v.ais_date
-             AND s.source_date = t.source_date AND s.sha256 = t.sha256
+             AND s.source_date = f.source_date AND s.sha256 = f.sha256
              AND s.available = 1
         WHERE v.ais_date = ? AND v.port = ? AND v.encounter_id = ?
           AND t.tick BETWEEN ? AND ?

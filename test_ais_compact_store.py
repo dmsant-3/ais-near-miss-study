@@ -178,7 +178,7 @@ class CompactStoreTests(unittest.TestCase):
             ''')
         with closing(store.open_writer(old)) as upgraded:
             self.assertEqual(store.completed_dates(upgraded), {date(2020, 1, 1)})
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 9)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 10)
 
     def test_v3_database_adds_measurements(self):
         old = Path(self.directory.name) / 'v3.sqlite'
@@ -186,7 +186,7 @@ class CompactStoreTests(unittest.TestCase):
             connection.executescript(store.SCHEMA + store.REPLAY_SCHEMA + store.HOURLY_SCHEMA
                                      + 'PRAGMA user_version = 3;')
         with closing(store.open_writer(old)) as upgraded:
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 9)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 10)
             self.assertEqual(upgraded.execute('SELECT count(*) FROM storage_measurement').fetchone()[0], 0)
 
     def test_v4_database_keeps_legacy_evidence_during_upgrade(self):
@@ -226,7 +226,7 @@ class CompactStoreTests(unittest.TestCase):
             row = upgraded.execute(
                 'SELECT speed_mps, direction_deg, direction_convention FROM environment_hour').fetchone()
             self.assertEqual(row, (0, None, 'toward'))
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 9)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 10)
 
     def test_v7_vessel_names_survive_normalization(self):
         old = Path(self.directory.name) / 'v7.sqlite'
@@ -246,7 +246,7 @@ class CompactStoreTests(unittest.TestCase):
             self.assertEqual(upgraded.execute(
                 'SELECT n.mmsi, n.name FROM track_sample t JOIN vessel_name n ON n.name_id=t.name_id'
             ).fetchone(), ('111', 'Ship'))
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 9)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 10)
 
     def test_v8_upgrade_leaves_unknown_exclusion_counts_unset(self):
         old = Path(self.directory.name) / 'v8.sqlite'
@@ -262,8 +262,37 @@ class CompactStoreTests(unittest.TestCase):
                 PRAGMA user_version = 8;
             """)
         with closing(store.open_writer(old)) as upgraded:
-            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 9)
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 10)
             self.assertIsNone(upgraded.execute('SELECT exclusion_total FROM port_day').fetchone()[0])
+
+    def test_v9_source_keys_upgrade_without_changing_replay(self):
+        old = Path(self.directory.name) / 'v9.sqlite'
+        with closing(sqlite3.connect(old)) as connection:
+            connection.create_function('compact_number', 1, store._number)
+            connection.create_function('compact_flag', 1, store._flag)
+            connection.create_function('compact_environment_hash', 12, store._environment_hash)
+            connection.executescript(
+                store.SCHEMA + store.REPLAY_SCHEMA + store.HOURLY_SCHEMA + store.MEASUREMENT_SCHEMA +
+                store.EVIDENCE_SCHEMA + store.NUMERIC_SCHEMA + store.ENVIRONMENT_SCHEMA +
+                store.VESSEL_SCHEMA + store.CLASSIFICATION_SCHEMA + """
+                INSERT INTO study_day VALUES ('2020-01-02', 'now', 'old');
+                INSERT INTO port_day (ais_date,port,potential_events,likely_for_human_review,
+                    elevated_priority_candidates,lower_priority_candidates,detector_quality,bbox_json)
+                    VALUES ('2020-01-02','NY',1,1,0,0,'{}','[]');
+                INSERT INTO ais_source VALUES ('2020-01-02','2020-01-02',1,'url','source',1);
+                INSERT INTO source_file VALUES ('2020-01-02','source');
+                INSERT INTO vessel_name (name_id,mmsi,name) VALUES (1,'111','Ship');
+                INSERT INTO track_sample VALUES ('NY','2020-01-02','source','111',100,1,2,1,0);
+                INSERT INTO encounter (ais_date,port,encounter_id,mmsi_a,mmsi_b,first_flag_utc,
+                    window_start,window_end,details_json)
+                    VALUES ('2020-01-02','NY','id','111','222','2020-01-02T00:00:00Z',90,120,'{}');
+                INSERT INTO encounter_vessel VALUES ('2020-01-02','NY','id','111','involved');
+                PRAGMA user_version = 9;
+            """)
+        with closing(store.open_writer(old)) as upgraded:
+            tracks = store.replay_tracks(upgraded, date(2020, 1, 2), 'NY', 'id')
+            self.assertEqual(tracks, {'111': [[100, 1.0, 2.0, 'Ship', False]]})
+            self.assertEqual(upgraded.execute('PRAGMA user_version').fetchone()[0], 10)
 
     def test_hourly_values_preserve_zero_missing_and_rollback(self):
         hour = int(datetime(2020, 1, 2, tzinfo=timezone.utc).timestamp())
