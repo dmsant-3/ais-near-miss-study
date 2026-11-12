@@ -24,6 +24,7 @@ The compact path stores 30 AIS dates for the three configured ports. Use decimal
 - An automated three-port fixture runs both report modes through the actual detector, evidence review, scoring and replay collection. It compares counts, scores, explanations, hourly traffic and replay tracks. Environmental responses are stubbed for this test.
 - A representative full-day and 30-date pilot remains outstanding before treating the 10 GB target as established. Short-lived temporary database or journal peaks require system-level measurement on the Ubuntu host. The compact dashboard requires Python 3 on the server path or `AIS_PYTHON`.
 - The first full-day pilot stopped at the weather request because cron pacing converted Python's certificate error to a cooldown before the verified system-curl fallback could run. The request policy now passes certificate-validation errors to that fallback. A live verification returned 48 weather hours with certificate verification enabled and no cooldown file. The fallback also records HTTP 429 and server-error cooldowns, including longer Retry-After values. A full-day retry is in progress.
+- The legacy wind reader also uses the verified weather request client, so its certificate fallback follows the same request policy.
 - The local cached `ais_weather_cache/ais/ais-2016-10-19.csv.zst` failed Zstandard decompression during parity validation and its header did not match a valid Zstandard frame. It was left in place.
 
 ## Batch entry point and publishing

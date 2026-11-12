@@ -6,10 +6,8 @@ from datetime import timedelta
 from bisect import bisect_left, bisect_right
 from math import cos, radians, hypot
 from pathlib import Path
-from ais_request_policy import open_request as urlopen
-
 from count_ais_near_misses import open_csv, timestamp, utc
-from ais_weather_pipeline import weather_url, download
+from ais_weather_pipeline import weather_url, download, request as weather_request
 from confirm_near_misses import excluded_vessel_type
 from ais_environment import EnvironmentalDownloader, distance_km
 from types import SimpleNamespace
@@ -134,7 +132,7 @@ def collect_wind(day, bbox, cache_policy=None, source_report=None):
         if source_report is not None:
             source_report['url'] = url
         if cache_policy is None:
-            with urlopen(url, timeout=30) as response:
+            with weather_request(url) as response:
                 hourly = json.load(response)['hourly']
         else:
             body, info = cache_policy.fetch(url)
@@ -144,7 +142,7 @@ def collect_wind(day, bbox, cache_policy=None, source_report=None):
         if source_report is not None:
             source_report['status'] = 'available'
         return dict(zip(hourly['time'], zip(hourly['wind_speed_10m'], hourly['wind_direction_10m'])))
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, RuntimeError) as exc:
         if source_report is not None:
             source_report.update(status='unavailable', error=str(exc))
         return {}

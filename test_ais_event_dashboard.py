@@ -3,13 +3,14 @@ import unittest
 import csv
 from datetime import date, timedelta
 import json
+import io
 import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from ais_event_dashboard import (collect_replay_tracks, compact_replay_records,
-                                 export, hourly_environment, select_replay_tracks)
+                                 collect_wind, export, hourly_environment, select_replay_tracks)
 from ais_compact_store import encounter_id, open_writer, publish_day, replay_tracks
 from count_ais_near_misses import timestamp, utc
 
@@ -37,6 +38,15 @@ class ReplayTrackSelectionTests(unittest.TestCase):
 
     def test_empty_eligible_list(self):
         self.assertEqual(list(select_replay_tracks([], {})), [])
+
+    def test_legacy_wind_uses_weather_request_client(self):
+        payload = {'hourly': {'time': [100], 'wind_speed_10m': [0],
+                              'wind_direction_10m': [90]}}
+        with patch('ais_event_dashboard.weather_request',
+                   return_value=io.BytesIO(json.dumps(payload).encode('utf-8'))) as request:
+            wind = collect_wind(date(2020, 1, 2), (-1, -1, 1, 1))
+        self.assertEqual(wind, {100: (0, 90)})
+        request.assert_called_once()
 
     def test_environment_export_keeps_zero_and_missing_values(self):
         day = date(2020, 1, 2)
@@ -146,7 +156,7 @@ class ReplayTrackSelectionTests(unittest.TestCase):
                                       point('3', first + 30, 0.005, 0, 'Anchor', '1')])
                     write_rows(previous, [point('1', start - 300, 0, 5, 'One', '0')] if crossing else [])
                     adjacent = lambda other_day: previous
-                    with patch('ais_event_dashboard.urlopen', side_effect=OSError('offline')), \
+                    with patch('ais_event_dashboard.weather_request', side_effect=OSError('offline')), \
                          patch('ais_event_dashboard.hourly_environment', return_value={}):
                         export(day, (-1, -1, 1, 1), main, folder, scored, None, adjacent)
                     html = (folder / 'event_dashboard.html').read_text(encoding='utf-8')
