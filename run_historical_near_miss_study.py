@@ -461,7 +461,8 @@ def run_compact(args) -> int:
                 day += timedelta(days=1)
             write_status('running', completed_dates=len(completed), missing_count=missing_count,
                          missing_dates=missing_dates)
-            pending = [(day, url) for day, url in links.items() if day not in completed]
+            pending = [(day, links[day]) for day in sorted(links, reverse=True)
+                       if day not in completed]
             pending = pending[:max(0, args.study_days - len(completed))]
             if args.max_days:
                 pending = pending[:args.max_days]

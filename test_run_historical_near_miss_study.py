@@ -127,10 +127,13 @@ class CompactRunnerTests(unittest.TestCase):
                     '--report-dir', str(root / 'report'), '--work-dir', str(root / 'work'),
                     '--work-reserve-bytes', '1', '--report-reserve-bytes', '1',
                     '--pause-seconds', '0', '--max-days', '7']
+            processed = []
             def download(url, target, reserve):
                 target.write_bytes(b'ais')
                 return {'source_url': url, 'sha256': 'fixture', 'compressed_bytes': 3}
             def analyze(day, port, bbox, ais, staging, node, adjacent, **kwargs):
+                if day not in processed:
+                    processed.append(day)
                 return {'port': port, 'potential_events': 0, 'likely_for_human_review': 0,
                         'elevated_priority_candidates': 0, 'lower_priority_candidates': 0,
                         'detector_quality': {}}
@@ -140,12 +143,15 @@ class CompactRunnerTests(unittest.TestCase):
                 for _ in range(6):
                     self.assertEqual(runner.main(args), 0)
                 self.assertEqual(downloader.call_count, 30)
+                self.assertEqual(processed, [end - timedelta(days=index) for index in range(30)])
             with closing(ais_compact_reader.open_reader(root / 'report' / 'study.sqlite')) as db:
                 progress = ais_compact_reader.progress(db)
                 self.assertEqual(len(progress['ports']), 90)
                 self.assertEqual(progress['projection']['measured_dates'], 30)
                 self.assertNotIn('tracks', json.dumps(progress))
                 self.assertEqual(len(ais_compact_store.completed_dates(db)), 30)
+                self.assertEqual(ais_compact_store.completed_dates(db),
+                                 {start + timedelta(days=index) for index in range(1, 31)})
 
     def test_space_preflight_stops_before_download(self):
         with TemporaryDirectory() as directory:
