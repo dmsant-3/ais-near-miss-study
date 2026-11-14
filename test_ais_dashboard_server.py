@@ -8,7 +8,6 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
-import sys
 from tempfile import TemporaryDirectory
 import time
 import unittest
@@ -22,7 +21,8 @@ import ais_compact_store as store
 class CompactDashboardTests(unittest.TestCase):
     def test_progress_pagination_replay_shell_and_gzip_export(self):
         with TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory) / 'historical_compact_reverse_report'
+            root.mkdir()
             (root / 'run_config.json').write_text('{"output_format":"compact"}', encoding='utf-8')
             day = date(2020, 1, 2)
             port = 'Port_of_NY_NJ'
@@ -42,9 +42,11 @@ class CompactDashboardTests(unittest.TestCase):
             with closing(socket.socket()) as sock:
                 sock.bind(('127.0.0.1', 0))
                 port_number = sock.getsockname()[1]
-            env = dict(os.environ, AIS_PYTHON=sys.executable, AIS_DASHBOARD_PORT=str(port_number))
+            env = dict(os.environ, AIS_DASHBOARD_PORT=str(port_number))
+            env.pop('AIS_PYTHON', None)
             flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-            process = subprocess.Popen([shutil.which('node'), 'ais_dashboard_server.js', str(root)],
+            server = Path(__file__).resolve().with_name('ais_dashboard_server.js')
+            process = subprocess.Popen([shutil.which('node'), str(server)], cwd=directory,
                                        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                        creationflags=flags)
             try:

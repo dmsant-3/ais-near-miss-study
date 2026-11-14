@@ -1,16 +1,21 @@
 const http = require('node:http');
 const fs = require('node:fs/promises');
+const { existsSync } = require('node:fs');
 const path = require('node:path');
 const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 const zlib = require('node:zlib');
 
-const reportRoot = path.resolve(process.argv[2] || 'historical_dashboard_pilot_v3');
+const reportRoot = path.resolve(process.argv[2] || 'historical_compact_reverse_report');
 const root = path.join(reportRoot, 'daily');
 const execFileAsync = promisify(execFile);
 const reader = path.join(__dirname, 'ais_compact_reader.py');
 const database = path.join(reportRoot, 'study.sqlite');
 const ports = ['Port_of_NY_NJ', 'Port_of_LA', 'Port_of_Houston'];
+const venvPython = path.join(__dirname, '.venv', process.platform === 'win32' ? 'Scripts' : 'bin',
+    process.platform === 'win32' ? 'python.exe' : 'python');
+const python = process.env.AIS_PYTHON || (existsSync(venvPython) ? venvPython :
+    (process.platform === 'win32' ? 'python' : 'python3'));
 
 function acceptsGzip(header) {
     return String(header || '').split(',').some(entry => {
@@ -22,7 +27,6 @@ function acceptsGzip(header) {
 }
 
 async function compactReader(action, args = []) {
-    const python = process.env.AIS_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
     const result = await execFileAsync(python, [reader, database, action, ...args],
         { maxBuffer: 64 * 1024 * 1024, timeout: 60000, env: { ...process.env, PYTHONUTF8: '1' } });
     return result.stdout;
@@ -270,7 +274,6 @@ http.createServer(async (req, res) => {
                 const args = [reader, database, 'export', '--kind', exportMatch[1], '--date', day];
                 if (port) args.push('--port', port);
                 if (encounter) args.push('--encounter', encounter);
-                const python = process.env.AIS_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
                 const child = spawn(python, args,
                     { windowsHide: true, env: { ...process.env, PYTHONUTF8: '1' } });
                 let stderr = '';
