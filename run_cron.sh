@@ -1,17 +1,17 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-format=${AIS_OUTPUT_FORMAT:-legacy}
-start_date=${AIS_START_DATE:-2016-01-01}
+format=${AIS_OUTPUT_FORMAT:-compact}
+start_date=${AIS_START_DATE:-2026-01-01}
 work_dir=${AIS_WORK_DIR:-ais_cron_work}
 if [ "$format" = compact ]; then
-  : "${AIS_END_DATE:?Set AIS_END_DATE for a compact study}"
-  : "${AIS_WORK_RESERVE_BYTES:?Set the measured work-volume scratch reserve}"
-  : "${AIS_REPORT_RESERVE_BYTES:?Set the measured report-volume scratch reserve}"
+  end_date=${AIS_END_DATE:-2026-12-31}
+  work_reserve_bytes=${AIS_WORK_RESERVE_BYTES:-20000000000}
+  report_reserve_bytes=${AIS_REPORT_RESERVE_BYTES:-5000000000}
   report_dir=${AIS_REPORT_DIR:-historical_compact_report}
-  set -- --output-format compact --end-date "$AIS_END_DATE" \
-    --work-reserve-bytes "$AIS_WORK_RESERVE_BYTES" \
-    --report-reserve-bytes "$AIS_REPORT_RESERVE_BYTES" \
+  set -- --output-format compact --end-date "$end_date" \
+    --work-reserve-bytes "$work_reserve_bytes" \
+    --report-reserve-bytes "$report_reserve_bytes" \
     --study-days "${AIS_STUDY_DAYS:-30}"
 elif [ "$format" = legacy ]; then
   report_dir=${AIS_REPORT_DIR:-historical_cron_report}
