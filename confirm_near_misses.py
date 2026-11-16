@@ -119,11 +119,19 @@ def excluded_vessel_type(value):
                      'tug','tugboat','towing','towing vessel'} or 'barge' in value.split()
 
 
+def excluded_vessel(value, name='', mmsi=''):
+    """Include a known tug even when its broadcast type is incorrect or missing."""
+    normalized_name = ' '.join((name or '').casefold().split())
+    return (excluded_vessel_type(value) or normalized_name == 'captain fayra'
+            or str(mmsi or '').strip() == '338547847')
+
+
 def load_tracks(path: Path, vessels: set[str], bbox: list[float], max_speed: float,
                 tugboats: set[str] | None = None, node: str | None = None) -> dict:
     west, south, east, north = bbox
     aliases = {'mmsi':'mmsi', 'basedatetime':'time', 'longitude':'lon', 'lon':'lon',
-               'latitude':'lat', 'lat':'lat', 'sog':'sog', 'cog':'cog', 'length':'length', 'vesseltype':'vesseltype'}
+               'latitude':'lat', 'lat':'lat', 'sog':'sog', 'cog':'cog', 'length':'length',
+               'vesseltype':'vesseltype', 'vesselname':'vesselname'}
     tracks: dict[str, list[tuple]] = {m: [] for m in vessels}
     bad = 0
     seen = 0
@@ -140,7 +148,8 @@ def load_tracks(path: Path, vessels: set[str], bbox: list[float], max_speed: flo
             if m not in tracks:
                 continue
             vessel_type = (row.get(mapping.get("vesseltype", "")) or "").strip().casefold()
-            if tugboats is not None and excluded_vessel_type(vessel_type):
+            if tugboats is not None and excluded_vessel(
+                    vessel_type, row.get(mapping.get('vesselname', '')), m):
                 tugboats.add(m)
             try:
                 t = detector.timestamp(row[mapping['time']])

@@ -6,7 +6,7 @@ const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 const zlib = require('node:zlib');
 
-const reportRoot = path.resolve(process.argv[2] || 'historical_compact_reverse_report');
+const reportRoot = path.resolve(process.argv[2] || 'historical_compact_no_tugs_report');
 const root = path.join(reportRoot, 'daily');
 const execFileAsync = promisify(execFile);
 const reader = path.join(__dirname, 'ais_compact_reader.py');

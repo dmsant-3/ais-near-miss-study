@@ -8,7 +8,7 @@ if [ "$format" = compact ]; then
   end_date=${AIS_END_DATE:-2026-10-31}
   work_reserve_bytes=${AIS_WORK_RESERVE_BYTES:-20000000000}
   report_reserve_bytes=${AIS_REPORT_RESERVE_BYTES:-5000000000}
-  report_dir=${AIS_REPORT_DIR:-historical_compact_reverse_report}
+  report_dir=${AIS_REPORT_DIR:-historical_compact_no_tugs_report}
   set -- --output-format compact --end-date "$end_date" \
     --work-reserve-bytes "$work_reserve_bytes" \
     --report-reserve-bytes "$report_reserve_bytes" \

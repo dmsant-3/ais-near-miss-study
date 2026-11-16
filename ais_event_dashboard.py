@@ -8,7 +8,7 @@ from math import cos, radians, hypot
 from pathlib import Path
 from count_ais_near_misses import open_csv, timestamp, utc
 from ais_weather_pipeline import weather_url, download, request as weather_request
-from confirm_near_misses import excluded_vessel_type
+from confirm_near_misses import excluded_vessel
 from ais_environment import EnvironmentalDownloader, distance_km
 from types import SimpleNamespace
 
@@ -78,7 +78,7 @@ def collect_replay_tracks(day, bbox, ais, scored, node, adjacent=None,
                 except (KeyError, ValueError, TypeError):
                     continue
                 vessel_type = (row.get('vesseltype') or '').strip().casefold()
-                if excluded_vessel_type(vessel_type):
+                if excluded_vessel(vessel_type, row.get('vesselname'), ship):
                     tugboats.add(ship)
                 anchored = row.get('status') in ('1', '1.0') and 0 <= speed < 1
                 state = 'anchored' if anchored else 'moving' if 1 <= speed < 100 else ''
@@ -90,6 +90,10 @@ def collect_replay_tracks(day, bbox, ais, scored, node, adjacent=None,
                     point_sources[(ship, point)].add(source_day.isoformat())
     if events and not tracks:
         raise ValueError('Scored encounters exist but no AIS tracks were loaded for the port')
+    for ships in traffic.values():
+        ships.difference_update(tugboats)
+    for ship in tugboats:
+        tracks.pop(ship, None)
     eligible = [(event, window) for event, window in zip(events, windows)
                 if not tugboats.intersection((event['mmsi_a'], event['mmsi_b']))]
     print(f'Excluded {len(events)-len(eligible)} barge or tug encounters from replay', flush=True)
