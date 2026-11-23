@@ -132,7 +132,7 @@ def load_day(legacy_root: Path, day: date, retain_audit: bool):
 
 
 def import_day(legacy_root: Path, compact_root: Path, day: date,
-               retain_audit: bool = False, limit_bytes: int = 10_000_000_000,
+               retain_audit: bool = False, limit_bytes: int | None = None,
                report_reserve_bytes: int = 0):
     """Verify and import one date. The caller must initialize the compact study."""
     sources, results, expected = load_day(legacy_root, day, retain_audit)
@@ -148,16 +148,16 @@ def import_day(legacy_root: Path, compact_root: Path, day: date,
         if not db_path.exists():
             raise FileNotFoundError('Initialize the compact study before importing')
         non_database = compact_size(compact_root) - db_path.stat().st_size
-        db = store.open_writer(db_path, max_bytes=limit_bytes - non_database - STATUS_RESERVE_BYTES)
+        db = store.open_writer(db_path, max_bytes=(limit_bytes - non_database - STATUS_RESERVE_BYTES
+                                                   if limit_bytes is not None else None))
         try:
-            if len(store.completed_dates(db)) >= config['study_days']:
-                raise ValueError('Compact study date limit reached')
-            page_size = db.execute('PRAGMA page_size').fetchone()[0]
-            max_pages = (limit_bytes - (compact_size(compact_root) - db_path.stat().st_size)
-                         - STATUS_RESERVE_BYTES) // page_size
-            if max_pages < db.execute('PRAGMA page_count').fetchone()[0]:
-                raise ValueError('Compact retained-output limit reached')
-            db.execute(f'PRAGMA max_page_count = {max_pages}')
+            if limit_bytes is not None:
+                page_size = db.execute('PRAGMA page_size').fetchone()[0]
+                max_pages = (limit_bytes - (compact_size(compact_root) - db_path.stat().st_size)
+                             - STATUS_RESERVE_BYTES) // page_size
+                if max_pages < db.execute('PRAGMA page_count').fetchone()[0]:
+                    raise ValueError('Compact retained-output limit reached')
+                db.execute(f'PRAGMA max_page_count = {max_pages}')
             def validate(connection):
                 for port, event_id, tracks in expected:
                     if store.replay_tracks(connection, day, port, event_id) != tracks:
@@ -173,7 +173,7 @@ def main():
     parser.add_argument('compact_root', type=Path)
     parser.add_argument('date', type=date.fromisoformat)
     parser.add_argument('--retain-audit-candidates', action='store_true')
-    parser.add_argument('--retained-limit-bytes', type=int, default=10_000_000_000)
+    parser.add_argument('--retained-limit-bytes', type=int, help='Optional retained-output size limit')
     parser.add_argument('--report-reserve-bytes', type=int, required=True,
                         help='Measured free-space reserve for the database journal')
     args = parser.parse_args()

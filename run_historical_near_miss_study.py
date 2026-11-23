@@ -420,6 +420,8 @@ def run_compact(args) -> int:
             migrated = dict(prior)
             migrated.setdefault('retain_audit_candidates', False)
             migrated.setdefault('scoring_version', scoring_version)
+            if args.study_days is None:
+                migrated['study_days'] = None
             if migrated != config:
                 raise ValueError('Compact report configuration differs from the existing run')
             if migrated != prior:
@@ -441,8 +443,9 @@ def run_compact(args) -> int:
                 or shutil.disk_usage(args.report_dir).free < args.report_reserve_bytes):
             raise OSError('Insufficient free space for configured scratch reserves')
         database_bytes = db_path.stat().st_size if db_path.exists() else 0
-        allowed_database_bytes = args.retained_limit_bytes - (
+        allowed_database_bytes = (args.retained_limit_bytes - (
             compact_size(args.report_dir) - database_bytes) - STATUS_RESERVE_BYTES
+            if args.retained_limit_bytes is not None else None)
         db = ais_compact_store.open_writer(db_path, max_bytes=allowed_database_bytes)
         try:
             links = available_days(args.start_date, args.end_date,
@@ -463,7 +466,8 @@ def run_compact(args) -> int:
                          missing_dates=missing_dates)
             pending = [(day, links[day]) for day in sorted(links, reverse=True)
                        if day not in completed]
-            pending = pending[:max(0, args.study_days - len(completed))]
+            if args.study_days is not None:
+                pending = pending[:max(0, args.study_days - len(completed))]
             if args.max_days:
                 pending = pending[:args.max_days]
             if args.dry_run:
@@ -478,7 +482,8 @@ def run_compact(args) -> int:
                 if (shutil.disk_usage(args.work_dir).free < work_reserve
                         or shutil.disk_usage(args.report_dir).free < args.report_reserve_bytes):
                     raise OSError('Insufficient free space for configured scratch reserves')
-                if compact_size(args.report_dir) >= args.retained_limit_bytes:
+                if (args.retained_limit_bytes is not None
+                        and compact_size(args.report_dir) >= args.retained_limit_bytes):
                     raise OSError('Compact retained-output limit reached')
                 retained_before = compact_size(args.report_dir)
                 with tempfile.TemporaryDirectory(prefix=f'ais_compact_{cache_key[:16]}_',
@@ -521,13 +526,16 @@ def run_compact(args) -> int:
                             json.dump(result, stream, allow_nan=False, separators=(',', ':'))
                         results.append({'port': port, '_staged_path': str(staged)})
                         del result
-                    non_database = compact_size(args.report_dir) - db_path.stat().st_size
-                    page_size = db.execute('PRAGMA page_size').fetchone()[0]
-                    max_pages = (args.retained_limit_bytes - non_database - STATUS_RESERVE_BYTES) // page_size
-                    current_pages = db.execute('PRAGMA page_count').fetchone()[0]
-                    if max_pages < current_pages:
-                        raise OSError('Compact retained-output limit reached')
-                    db.execute(f'PRAGMA max_page_count = {max_pages}')
+                    if shutil.disk_usage(args.report_dir).free < args.report_reserve_bytes:
+                        raise OSError('Insufficient free space for configured report reserve')
+                    if args.retained_limit_bytes is not None:
+                        non_database = compact_size(args.report_dir) - db_path.stat().st_size
+                        page_size = db.execute('PRAGMA page_size').fetchone()[0]
+                        max_pages = (args.retained_limit_bytes - non_database - STATUS_RESERVE_BYTES) // page_size
+                        current_pages = db.execute('PRAGMA page_count').fetchone()[0]
+                        if max_pages < current_pages:
+                            raise OSError('Compact retained-output limit reached')
+                        db.execute(f'PRAGMA max_page_count = {max_pages}')
                     write_status('running', active_date=day.isoformat(), active_port=None,
                                  stage='publishing')
                     ais_compact_store.publish_day(db, day, sources, results, PORTS, scoring_version)
@@ -693,10 +701,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--request-gap-seconds', type=float, default=5)
     p.add_argument('--node', help='Optional Node.js path when Python zstandard is unavailable')
     p.add_argument('--output-format', choices=('legacy', 'compact'), default='legacy')
-    p.add_argument('--study-days', type=int, default=30)
+    p.add_argument('--study-days', type=int, help='Optional cap on completed study dates')
     p.add_argument('--work-reserve-bytes', type=int)
     p.add_argument('--report-reserve-bytes', type=int)
-    p.add_argument('--retained-limit-bytes', type=int, default=10_000_000_000)
+    p.add_argument('--retained-limit-bytes', type=int, help='Optional retained-output size limit')
     p.add_argument('--cache-limit-bytes', type=int, default=2_000_000_000)
     p.add_argument('--retain-audit-candidates', action='store_true')
     return p
@@ -712,9 +720,9 @@ def main(argv: list[str] | None = None) -> int:
         provided = sys.argv[1:] if argv is None else argv
         if not any(value == '--end-date' or value.startswith('--end-date=') for value in provided):
             raise ValueError('Compact mode requires an explicit --end-date')
-        if (args.study_days <= 0 or args.work_reserve_bytes is None or args.work_reserve_bytes <= 0
+        if ((args.study_days is not None and args.study_days <= 0) or args.work_reserve_bytes is None or args.work_reserve_bytes <= 0
                 or args.report_reserve_bytes is None or args.report_reserve_bytes <= 0
-                or args.retained_limit_bytes <= 0 or args.cache_limit_bytes <= 0):
+                or (args.retained_limit_bytes is not None and args.retained_limit_bytes <= 0) or args.cache_limit_bytes <= 0):
             raise ValueError('Compact study days, reserves, and retained limit must be positive')
     args.report_dir = args.report_dir.resolve()
     args.work_dir = args.work_dir.resolve()

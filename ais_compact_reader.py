@@ -41,11 +41,11 @@ def progress(connection: sqlite3.Connection) -> dict:
     if measurements:
         growth = [max(0, row['retained_after'] - row['retained_before']) for row in measurements]
         latest = max(row['retained_after'] for row in measurements)
-        remaining = max(0, 30 - len(measurements))
         projections = {
             'measured_dates': len(measurements),
-            'average_30_dates_bytes': round(latest + sum(growth) / len(growth) * remaining),
-            'busiest_30_dates_bytes': latest + max(growth) * remaining,
+            'retained_bytes': latest,
+            'average_date_growth_bytes': round(sum(growth) / len(growth)),
+            'largest_date_growth_bytes': max(growth),
         }
     return {'ports': ports, 'storage_measurements': measurements, 'projection': projections}
 

@@ -24,7 +24,7 @@ class MigrationTests(unittest.TestCase):
             daily = legacy / 'daily' / str(day)
             compact.mkdir()
             config = {'output_format': 'compact', 'start_date': str(day), 'end_date': str(day),
-                      'study_days': 30, 'retain_audit_candidates': False}
+                      'study_days': None, 'retain_audit_candidates': False}
             (compact / 'run_config.json').write_text(json.dumps(config), encoding='utf-8')
             with closing(store.open_writer(compact / 'study.sqlite')):
                 pass

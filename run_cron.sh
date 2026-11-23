@@ -11,8 +11,7 @@ if [ "$format" = compact ]; then
   report_dir=${AIS_REPORT_DIR:-historical_compact_no_tugs_report}
   set -- --output-format compact --end-date "$end_date" \
     --work-reserve-bytes "$work_reserve_bytes" \
-    --report-reserve-bytes "$report_reserve_bytes" \
-    --study-days "${AIS_STUDY_DAYS:-30}"
+    --report-reserve-bytes "$report_reserve_bytes"
 elif [ "$format" = legacy ]; then
   start_date=${AIS_START_DATE:-2026-01-01}
   report_dir=${AIS_REPORT_DIR:-historical_cron_report}

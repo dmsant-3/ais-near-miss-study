@@ -241,10 +241,10 @@ http.createServer(async (req, res) => {
                 const missing = data.status?.missing_count ? '<p>' +
                     Number(data.status.missing_count) + ' dates absent from the NOAA index. First dates: ' +
                     data.status.missing_dates.map(escapeHtml).join(', ') + '</p>' : '';
-                const metrics = data.projection ? '<p>Projected retained output for 30 dates: ' +
-                    (data.projection.average_30_dates_bytes / 1e9).toFixed(2) + ' GB using average growth, ' +
-                    (data.projection.busiest_30_dates_bytes / 1e9).toFixed(2) +
-                    ' GB using the busiest measured date. Measurements cover ' +
+                const metrics = data.projection ? '<p>Retained output: ' +
+                    (data.projection.retained_bytes / 1e9).toFixed(2) + ' GB; average growth per date: ' +
+                    (data.projection.average_date_growth_bytes / 1e6).toFixed(1) +
+                    ' MB. Measurements cover ' +
                     data.projection.measured_dates + ' dates.</p>' : '';
                 const history = Array.isArray(data.status?.history) && data.status.history.length ?
                     '<details><summary>Recent run history</summary><ul>' +
@@ -253,7 +253,8 @@ http.createServer(async (req, res) => {
                         (item.message ? ' · ' + escapeHtml(item.message) : '') + '</li>').join('') +
                     '</ul></details>' : '';
                 res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>AIS progress</title><h1>AIS progress</h1><p>' +
-                    data.completed_days + ' completed AIS dates of ' + Number(data.config.study_days) +
+                    data.completed_days + ' completed AIS dates' + (data.config.study_days == null ? '' :
+                    ' of ' + Number(data.config.study_days)) +
                     '</p>' + status + active + missing + metrics + '<ul>' + links.join('') + '</ul>' + history + theme);
             }
             return;
