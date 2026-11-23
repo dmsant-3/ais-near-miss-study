@@ -45,6 +45,19 @@ The study processes all available dates in its configured range by default, with
 
 The compact progress page displays up to 30 completed dates per page. Use its year and month menus to filter dates and the previous and next links to move between pages. Each date includes its available ports and export links.
 
+### Official incident reports
+
+Official incident reports can be matched independently of encounter scoring and dock exclusions. Download the Coast Guard's closed-investigation spreadsheet from [CGMIX](https://cgmix.uscg.mil/XML/IIRExportSearch.aspx) and/or the full marine JSON export from [NTSB CAROL](https://my.ntsb.gov/); the NTSB summary CSV does not include vessel identities. Install `openpyxl` in the project virtual environment to read the Coast Guard spreadsheet. Obtain the original NOAA daily AIS files for the dates to check; compact SQLite reports do not retain every AIS observation.
+
+For example, in Windows PowerShell (repeat `--ais-file` for additional dates):
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install openpyxl
+.\.venv\Scripts\python.exe match_official_incidents.py --uscg-xlsx .incident_sources\uscg.xlsx --ntsb-json .incident_sources\ntsb.json --ais-file .incident_sources\ais-2026-06-03.csv.zst --report-dir historical_compact_no_tugs_report
+```
+
+The report folder receives `official_incident_matches.json`; reload the progress page to see bold, colored official-report links and their evidence. The matching scan uses a normalized exact vessel name or a reported seven-digit identifier matching AIS IMO, a reported incident location within a study port, and an AIS position within 2 nautical miles. NTSB observations must also be within two hours of the reported UTC time. Coast Guard export times have no specified time zone, so matching uses the same calendar date without a time-of-day test. A reported identifier is not necessarily an IMO number, names can be reused, and locations or times may be imprecise: these are possible matches requiring review, not verified incident identifications. The date restriction can miss matches across midnight. Records without usable vessel names and coordinates, incidents outside the study port boundaries, unsearched dates, open Coast Guard investigations, and cases absent from the downloaded exports cannot be matched. Coast Guard search date filters may refer to investigation dates rather than incident dates. The sidecar records source and AIS checksums per processed date and agency; rerunning replaces matches only for the supplied agencies and dates.
+
 In an encounter review, the vessel legend links each involved vessel to its VesselFinder page by MMSI. VesselFinder data is external and may reflect more recent vessel information than the historical encounter.
 
 The replay map loads current geographic tiles from OpenStreetMap in the browser; an internet connection is needed for the basemap. Tracks and environmental observations still come from the historical study. If tiles are unavailable, the replay uses a plain background.

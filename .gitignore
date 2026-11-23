@@ -7,6 +7,7 @@ __pycache__/
 ais_weather_cache/
 ais_batch_work/
 ais_cron_work/
+.incident_sources/
 historical_compact_report/
 historical_compact_reverse_report/
 historical_compact_no_tugs_report/

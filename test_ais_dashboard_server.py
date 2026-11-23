@@ -25,6 +25,13 @@ class CompactDashboardTests(unittest.TestCase):
             root = Path(directory) / 'historical_compact_no_tugs_no_docks_report'
             root.mkdir()
             (root / 'run_config.json').write_text('{"output_format":"compact"}', encoding='utf-8')
+            official = {'version': 1, 'matches': [{'agency': 'USCG', 'case_id': '12345',
+                'date': '2020-01-02', 'ports': ['Port_of_NY_NJ'], 'reported_time': '2020-01-02T01:00:00',
+                'time_basis': 'timezone unspecified', 'lat': 40, 'lon': -74, 'summary': '<unsafe>',
+                'matches': [{'ais_vessel_name': 'VESSEL', 'mmsi': '123456789', 'identity_evidence': 'name',
+                             'ais_time_utc': '2020-01-02T01:00:00Z', 'distance_m': 50,
+                             'time_difference_seconds': None}]}]}
+            (root / 'official_incident_matches.json').write_text(json.dumps(official), encoding='utf-8')
             day = date(2020, 1, 2)
             port = 'Port_of_NY_NJ'
             event = {'mmsi_a': '111', 'mmsi_b': '222', 'first_flag_utc': '2020-01-02T00:00:00Z',
@@ -73,6 +80,13 @@ class CompactDashboardTests(unittest.TestCase):
                     page = response.read().decode('utf-8')
                     self.assertIn('1 completed AIS dates</p>', page)
                     self.assertIn('produced before moored-location exclusion', page)
+                    self.assertIn('OFFICIAL INCIDENT REPORTED', page)
+                    self.assertIn('/official-incidents/USCG/12345', page)
+                with urlopen(base + '/official-incidents/USCG/12345', timeout=10) as response:
+                    detail = response.read().decode('utf-8')
+                    self.assertIn('possible AIS match, requires review', detail)
+                    self.assertIn('&lt;unsafe&gt;', detail)
+                    self.assertNotIn('<unsafe>', detail)
                 with urlopen(base + f'/api/days/{day}/ports/{port}/provenance', timeout=10) as response:
                     provenance = json.load(response)
                 self.assertEqual(provenance['ais_sources'][0]['sha256'], 'fixture')

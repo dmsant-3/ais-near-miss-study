@@ -42,6 +42,18 @@ async function isCompact() {
         throw error;
     }
 }
+async function officialMatches() {
+    try {
+        const data = JSON.parse(await fs.readFile(path.join(reportRoot, 'official_incident_matches.json'), 'utf8'));
+        if (data.version !== 1 || !Array.isArray(data.matches)) throw new Error('Invalid official incident file');
+        return data.matches;
+    } catch (error) {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+    }
+}
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char =>
+    ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
 const theme = `<meta name="viewport" content="width=device-width,initial-scale=1"><style>
 *{box-sizing:border-box}
 body{margin:0 auto;padding:clamp(16px,4vw,48px);max-width:1120px;background:#101e2d;color:#edf5ff;font:16px/1.5 system-ui}
@@ -55,6 +67,8 @@ button,select{font:inherit;border:1px solid #53738f;border-radius:8px;padding:8p
 button{cursor:pointer} button:hover{background:#345c79} input[type=range]{accent-color:#83e2ce;max-width:100%;min-width:0}
 :focus-visible{outline:2px solid #83e2ce;outline-offset:3px}
 #details{font-variant-numeric:tabular-nums;background:#192d40;border-left:3px solid #83e2ce;padding:10px 14px}
+.official-incident{background:#4d1c38;border-left:4px solid #ff9fbc;color:#fff;padding:10px 14px;margin:8px 0;font-weight:700}
+.official-incident a{color:#ffcadb}
 canvas{display:block;width:100%;height:auto;background:#f3f8fc;border:1px solid #53738f;border-radius:16px}
 .ship-legend{margin:14px 0;padding:14px 18px;background:#192d40;border:1px solid #34516a;border-radius:12px}
 .ship-legend ul{display:flex;flex-wrap:wrap;gap:8px 24px;list-style:none;padding:0;margin:8px 0 0}
@@ -221,6 +235,31 @@ http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     try {
         const compact = await isCompact();
+        const officialRoute = /^\/official-incidents\/(USCG|NTSB)\/([A-Za-z0-9-]+)$/.exec(route);
+        if (compact && officialRoute) {
+            const cases = await officialMatches();
+            const incident = cases.find(item => item.agency === officialRoute[1] && item.case_id === officialRoute[2]);
+            if (!incident) { res.writeHead(404).end('Official incident not found'); return; }
+            const sourceUrl = incident.agency === 'USCG' ? 'https://cgmix.uscg.mil/iir/Default.aspx' :
+                'https://www.ntsb.gov/investigations/Pages/' + encodeURIComponent(incident.case_id) + '.aspx';
+            const evidence = incident.matches.map(match => '<li><strong>' + escapeHtml(match.ais_vessel_name) +
+                ' · MMSI ' + escapeHtml(match.mmsi) + '</strong> · ' + escapeHtml(match.identity_evidence) +
+                ' · AIS observation ' + escapeHtml(match.ais_time_utc) + ' · ' +
+                Number(match.distance_m).toFixed(0) + ' m from reported location' +
+                (match.time_difference_seconds == null ? ' · reported time zone unspecified' :
+                 ' · ' + Math.round(Number(match.time_difference_seconds) / 60) + ' minutes from incident time') + '</li>').join('');
+            res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+                '<title>Official incident review</title><h1>Official incident report</h1><div class="official-incident">' +
+                escapeHtml(incident.agency) + ' · ' + escapeHtml(incident.case_id) +
+                ' — possible AIS match, requires review</div><p>Reported incident: ' + escapeHtml(incident.reported_time) +
+                ' (' + escapeHtml(incident.time_basis) + '), location ' + escapeHtml(incident.lat) + ', ' +
+                escapeHtml(incident.lon) + '.</p><p>' + escapeHtml(incident.summary) + '</p><ul>' + evidence +
+                '</ul><p>AIS observations are matched by vessel identity, date and location; they do not prove the incident correspondence. ' +
+                'This list is independent of encounter scores and exclusions.</p><p><a href="' + sourceUrl +
+                '" target="_blank" rel="noopener noreferrer">Open official agency records</a> · ' +
+                '<a href="/progress.html">Back to progress</a></p>' + theme);
+            return;
+        }
         if (compact && (route === '/' || route === '/progress.html' || route === '/api/progress')) {
             const query = new URL(req.url, 'http://localhost').searchParams;
             const year = query.get('year') || '';
@@ -251,6 +290,7 @@ http.createServer(async (req, res) => {
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
                 res.end(JSON.stringify(data));
             } else {
+                const official = await officialMatches();
                 const links = data.ports.map(row =>
                     '<li><a href="/' + row.ais_date + '/' + row.port + '">' +
                     row.ais_date + ' · ' + row.port.replaceAll('_', ' ') + '</a> — ' +
@@ -265,9 +305,12 @@ http.createServer(async (req, res) => {
                     row.ais_date + '&amp;port=' + row.port + '">review CSV</a> · <a href="/api/export/traffic?date=' +
                     row.ais_date + '&amp;port=' + row.port + '">traffic CSV</a> · <a href="/api/export/environment?date=' +
                     row.ais_date + '&amp;port=' + row.port + '">environment CSV</a> · <a href="/api/days/' +
-                    row.ais_date + '/ports/' + row.port + '/provenance">provenance</a></li>');
-                const escapeHtml = value => String(value).replace(/[&<>"']/g, char =>
-                    ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
+                    row.ais_date + '/ports/' + row.port + '/provenance">provenance</a>' +
+                    official.filter(item => item.date === row.ais_date && Array.isArray(item.ports) && item.ports.includes(row.port))
+                        .map(item => '<div class="official-incident"><strong>OFFICIAL INCIDENT REPORTED · ' +
+                            escapeHtml(item.agency) + ' ' + escapeHtml(item.case_id) + '</strong> — possible AIS match · ' +
+                            '<a href="/official-incidents/' + encodeURIComponent(item.agency) + '/' +
+                            encodeURIComponent(item.case_id) + '">Review match</a></div>').join('') + '</li>');
                 const years = [...new Set(data.calendar.map(item => item.slice(0, 4)))];
                 if (year && !years.includes(year)) years.push(year);
                 years.sort().reverse();
