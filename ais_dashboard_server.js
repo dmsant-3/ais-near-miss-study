@@ -6,7 +6,9 @@ const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 const zlib = require('node:zlib');
 
-const reportRoot = path.resolve(process.argv[2] || 'historical_compact_no_tugs_report');
+const defaultReport = existsSync('historical_compact_no_tugs_no_docks_report/run_config.json') ?
+    'historical_compact_no_tugs_no_docks_report' : 'historical_compact_no_tugs_report';
+const reportRoot = path.resolve(process.argv[2] || defaultReport);
 const root = path.join(reportRoot, 'daily');
 const execFileAsync = promisify(execFile);
 const reader = path.join(__dirname, 'ais_compact_reader.py');
@@ -254,6 +256,9 @@ http.createServer(async (req, res) => {
                     row.ais_date + ' · ' + row.port.replaceAll('_', ' ') + '</a> — ' +
                     row.potential_events + ' screened, ' + row.likely_for_human_review +
                     ' for review' + (row.exclusion_total == null ? '' : ', ' + row.exclusion_total + ' excluded') +
+                    (row.excluded_near_moored_location == null ? '' :
+                    ' (' + Number(row.excluded_near_moored_location) + ' near moored locations)') +
+                    (row.moored_status_available === false ? ' · moored-status data unavailable' : '') +
                     ' · <a href="/api/export/daily?date=' + row.ais_date + '&amp;port=' + row.port +
                     '">daily CSV</a> · <a href="/api/export/candidates?date=' + row.ais_date +
                     '&amp;port=' + row.port + '">candidates CSV</a> · <a href="/api/export/likely?date=' +
@@ -295,6 +300,8 @@ http.createServer(async (req, res) => {
                     '</nav>';
                 const status = data.status ? '<p>Latest run: ' + escapeHtml(data.status.state) +
                     (data.status.message ? ' — ' + escapeHtml(data.status.message) : '') + '</p>' : '';
+                const dockNotice = data.config.dock_exclusion ? '' :
+                    '<p>This report was produced before moored-location exclusion and may include encounters near docks.</p>';
                 const active = data.status?.active_date ? '<p>Processing ' +
                     escapeHtml(data.status.active_date) +
                     (data.status.active_port ? ' · ' + escapeHtml(data.status.active_port.replaceAll('_', ' ')) : '') +
@@ -316,7 +323,7 @@ http.createServer(async (req, res) => {
                 res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>AIS progress</title><h1>AIS progress</h1><p>' +
                     data.completed_days + ' completed AIS dates' + (data.config.study_days == null ? '' :
                     ' of ' + Number(data.config.study_days)) +
-                    '</p>' + status + active + missing + metrics + filters + pagination +
+                    '</p>' + dockNotice + status + active + missing + metrics + filters + pagination +
                     (links.length ? '<ul>' + links.join('') + '</ul>' : '<p>No completed dates match these filters.</p>') +
                     pagination + history + theme);
             }

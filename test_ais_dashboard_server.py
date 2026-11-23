@@ -22,7 +22,7 @@ import ais_compact_store as store
 class CompactDashboardTests(unittest.TestCase):
     def test_progress_pagination_replay_shell_and_gzip_export(self):
         with TemporaryDirectory() as directory:
-            root = Path(directory) / 'historical_compact_no_tugs_report'
+            root = Path(directory) / 'historical_compact_no_tugs_no_docks_report'
             root.mkdir()
             (root / 'run_config.json').write_text('{"output_format":"compact"}', encoding='utf-8')
             day = date(2020, 1, 2)
@@ -70,7 +70,9 @@ class CompactDashboardTests(unittest.TestCase):
                     self.fail(f'Dashboard did not start: {last_error}')
                 self.assertEqual(progress['ports'][0]['port'], port)
                 with urlopen(base + '/progress.html', timeout=10) as response:
-                    self.assertIn('1 completed AIS dates</p>', response.read().decode('utf-8'))
+                    page = response.read().decode('utf-8')
+                    self.assertIn('1 completed AIS dates</p>', page)
+                    self.assertIn('produced before moored-location exclusion', page)
                 with urlopen(base + f'/api/days/{day}/ports/{port}/provenance', timeout=10) as response:
                     provenance = json.load(response)
                 self.assertEqual(provenance['ais_sources'][0]['sha256'], 'fixture')

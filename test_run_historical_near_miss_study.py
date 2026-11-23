@@ -95,6 +95,7 @@ class CompactRunnerTests(unittest.TestCase):
                 self.assertEqual(runner.main(args), 0)
                 config_file = report / 'run_config.json'
                 old_config = json.loads(config_file.read_text(encoding='utf-8'))
+                self.assertEqual(old_config['dock_exclusion']['distance_m'], 185.2)
                 old_config.pop('scoring_version')
                 old_config.pop('retain_audit_candidates')
                 config_file.write_text(json.dumps(old_config), encoding='utf-8')

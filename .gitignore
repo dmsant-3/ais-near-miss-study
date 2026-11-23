@@ -10,6 +10,7 @@ ais_cron_work/
 historical_compact_report/
 historical_compact_reverse_report/
 historical_compact_no_tugs_report/
+historical_compact_no_tugs_no_docks_report/
 historical_cron_report/
 .ais-cron.lock
 *.csv.zst

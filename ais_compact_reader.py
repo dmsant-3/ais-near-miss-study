@@ -71,7 +71,7 @@ def progress_page(connection: sqlite3.Connection, year: int | None = None,
     rows = connection.execute(
         'WITH selected AS (SELECT ais_date FROM study_day' + condition +
         ' ORDER BY ais_date DESC LIMIT 30 OFFSET ?) '
-        'SELECT p.ais_date, p.port, p.potential_events, p.likely_for_human_review, p.exclusion_total '
+        'SELECT p.ais_date, p.port, p.potential_events, p.likely_for_human_review, p.exclusion_total, p.detector_quality '
         'FROM port_day p JOIN selected s ON s.ais_date = p.ais_date ORDER BY p.ais_date DESC, p.port',
         [*values, (page - 1) * 30])
     measurement = connection.execute(
@@ -81,7 +81,14 @@ def progress_page(connection: sqlite3.Connection, year: int | None = None,
     projection = None if not measurement[0] else {
         'measured_dates': measurement[0], 'retained_bytes': measurement[1],
         'average_date_growth_bytes': round(measurement[2]), 'largest_date_growth_bytes': measurement[3]}
-    return {'ports': [dict(row) for row in rows], 'calendar': calendar,
+    ports = []
+    for row in rows:
+        item = dict(row)
+        quality = json.loads(item.pop('detector_quality'))
+        item['moored_status_available'] = quality.get('moored_status_available')
+        item['excluded_near_moored_location'] = quality.get('excluded_near_moored_location')
+        ports.append(item)
+    return {'ports': ports, 'calendar': calendar,
             'completed_days': connection.execute('SELECT count(*) FROM study_day').fetchone()[0],
             'filtered_days': total, 'page': page, 'pages': pages, 'projection': projection}
 

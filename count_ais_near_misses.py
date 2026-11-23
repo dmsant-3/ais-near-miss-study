@@ -37,6 +37,7 @@ import time
 
 EARTH_R = 6371008.8
 KNOT = 1852 / 3600
+DOCK_DISTANCE_M = 185.2
 NODE_READER = """const fs=require('node:fs'),z=require('node:zlib');
 const f=fs.createReadStream(process.argv[1]),d=z.createZstdDecompress();
 for(const s of [f,d])s.on('error',e=>{console.error(e.message);process.exit(1)});
@@ -138,14 +139,27 @@ def relative_cpa(a, b):
     return distance, math.hypot(x+vx*tcpa, y+vy*tcpa), tcpa
 
 
+def is_moored_status(value):
+    text = str(value or '').strip().casefold()
+    if text == 'moored':
+        return True
+    try:
+        return float(text) == 5.0
+    except ValueError:
+        return False
+
+
 def ingest(db, args):
     db.execute('CREATE TABLE reports (m TEXT,t REAL,lon REAL,lat REAL,ve REAL,vn REAL, '
                'PRIMARY KEY(m,t)) WITHOUT ROWID')
-    stats = dict(rows_read=0, invalid_rows=0, outside_bbox=0,
+    db.execute('CREATE TABLE moored_positions (lon REAL,lat REAL,PRIMARY KEY(lon,lat)) WITHOUT ROWID')
+    stats = dict(rows_read=0, invalid_rows=0, outside_bbox=0, moored_reports=0,
                  duplicate_or_conflicting_timestamp_rows=0, retained_reports=0)
     aliases = {'mmsi': 'm', 'basedatetime': 't', 'longitude': 'lon', 'lon': 'lon',
-               'latitude': 'lat', 'lat': 'lat', 'sog': 'sog', 'cog': 'cog'}
+               'latitude': 'lat', 'lat': 'lat', 'sog': 'sog', 'cog': 'cog',
+               'status': 'status', 'navstatus': 'status', 'navigationalstatus': 'status'}
     batch = []
+    moored_batch = []
 
     def flush():
         before = db.total_changes
@@ -154,6 +168,8 @@ def ingest(db, args):
         stats['retained_reports'] += added
         stats['duplicate_or_conflicting_timestamp_rows'] += len(batch)-added
         batch.clear()
+        db.executemany('INSERT OR IGNORE INTO moored_positions VALUES (?,?)', moored_batch)
+        moored_batch.clear()
         db.commit()
 
     with open_csv(args.input, args.node) as stream:
@@ -163,8 +179,35 @@ def ingest(db, args):
         missing = {'m','t','lon','lat','sog','cog'} - mapping.keys()
         if missing:
             raise ValueError('Missing required columns: '+', '.join(sorted(missing)))
+        stats['moored_status_available'] = 'status' in mapping
+        if not stats['moored_status_available']:
+            log('Warning: no navigation status column; moored-location exclusion cannot be applied')
         for row in reader:
             stats['rows_read'] += 1
+            if is_moored_status(row.get(mapping.get('status', ''))):
+                try:
+                    moored_mmsi = (row.get(mapping['m']) or '').strip()
+                    timestamp(row[mapping['t']])
+                    if not moored_mmsi.isdigit() or len(moored_mmsi) != 9:
+                        raise ValueError
+                    moored_lon, moored_lat = float(row[mapping['lon']]), float(row[mapping['lat']])
+                    if not (math.isfinite(moored_lon) and math.isfinite(moored_lat)
+                            and -180 <= moored_lon <= 180 and -90 < moored_lat < 90):
+                        raise ValueError
+                    if args.bbox:
+                        w, s, e, n = args.bbox
+                        reach = DOCK_DISTANCE_M + args.max_speed_knots * KNOT * args.tcpa_seconds
+                        lat_buffer = math.degrees(reach / EARTH_R)
+                        lon_buffer = lat_buffer / max(0.01, math.cos(math.radians(min(89.0, max(abs(s), abs(n)) + lat_buffer))))
+                        longitude_in_range = (w-lon_buffer <= moored_lon <= e+lon_buffer or
+                                              (w-lon_buffer < -180 and moored_lon >= w-lon_buffer+360) or
+                                              (e+lon_buffer > 180 and moored_lon <= e+lon_buffer-360))
+                        if not (longitude_in_range and s-lat_buffer <= moored_lat <= n+lat_buffer):
+                            raise ValueError
+                    moored_batch.append((moored_lon, moored_lat))
+                    stats['moored_reports'] += 1
+                except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+                    pass
             try:
                 m = row[mapping['m']].strip()
                 t = timestamp(row[mapping['t']])
@@ -187,11 +230,12 @@ def ingest(db, args):
                 batch.append((m,t,lon,lat,ve,vn))
             except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
                 stats['invalid_rows'] += 1
-            if len(batch) >= 50000:
+            if len(batch) >= 50000 or len(moored_batch) >= 50000:
                 flush()
             if stats['rows_read'] % 1000000 == 0:
                 log(f"Read {stats['rows_read']:,} rows")
         flush()
+    stats['moored_locations'] = db.execute('SELECT count(*) FROM moored_positions').fetchone()[0]
     return stats
 
 
@@ -265,10 +309,38 @@ EVENT_FIELDS = ['mmsi_a','mmsi_b','first_flag_utc','last_flag_utc','flag_count',
 
 def detect(db, args, writer):
     active = {}
-    stats = dict(events=0, flagged_pair_samples=0, time_steps=0)
+    stats = dict(events=0, excluded_near_moored_location=0, flagged_pair_samples=0, time_steps=0)
+    moored_grid = {}
+    for lon, lat in db.execute('SELECT lon,lat FROM moored_positions'):
+        point = ecef(lon, lat)
+        cell = tuple(math.floor(value / DOCK_DISTANCE_M) for value in point)
+        moored_grid.setdefault(cell, []).append(point)
+    offsets = tuple(itertools.product((-1, 0, 1), repeat=3))
+    chord_limit = 2 * EARTH_R * math.sin(DOCK_DISTANCE_M / (2 * EARTH_R))
+
+    def near_moored(lon, lat):
+        point = ecef(lon, lat)
+        cell = tuple(math.floor(value / DOCK_DISTANCE_M) for value in point)
+        return any(sum((point[i]-other[i])**2 for i in range(3)) <= chord_limit**2
+                   for offset in offsets
+                   for other in moored_grid.get(tuple(cell[i]+offset[i] for i in range(3)), ()))
+
+    def near_moored_cpa(a, b, seconds):
+        if not moored_grid:
+            return False
+        for vessel in (a, b):
+            latitude = vessel[2] + math.degrees(vessel[4] * seconds / EARTH_R)
+            longitude = vessel[1] + math.degrees(vessel[3] * seconds /
+                                                 (EARTH_R * max(1e-6, math.cos(math.radians(vessel[2])))))
+            if near_moored((longitude + 180) % 360 - 180, latitude):
+                return True
+        return False
 
     def finish(pair):
         event = active.pop(pair)
+        if event['near_moored']:
+            stats['excluded_near_moored_location'] += 1
+            return
         writer.writerow(dict(zip(EVENT_FIELDS,[*pair,utc(event['first']),utc(event['last']),
             event['n'],round(event['distance'],3),round(event['dcpa'],3),
             utc(event['dcpa_time']),round(event['tcpa_min'],3),round(event['tcpa_first'],3),
@@ -296,8 +368,10 @@ def detect(db, args, writer):
                 event = dict(first=tick,last=tick,n=0,distance=distance,dcpa=dcpa,
                              dcpa_time=tick,tcpa_min=tcpa,tcpa_first=tcpa,
                              lon=(a[1]+((b[1]-a[1]+180)%360-180)/2+180)%360-180,
-                             lat=(a[2]+b[2])/2)
+                             lat=(a[2]+b[2])/2, near_moored=False)
                 active[pair] = event
+            if not event['near_moored']:
+                event['near_moored'] = near_moored_cpa(a, b, tcpa)
             event['last'] = tick
             event['n'] += 1
             event['distance'] = min(event['distance'],distance)
@@ -393,6 +467,8 @@ def main(argv=None):
                     'Separation is antenna-position separation at flagged samples only; '
                     'not hull clearance or the full encounter minimum.',
                     'Routine tug, berth and parallel operations need contextual review.',
+                    'Moored-status AIS positions are dock proxies, not verified dock boundaries; '
+                    'missing or incorrect navigation status may cause missed or false exclusions.',
                     'Missing reports, boundary coverage and grid interval affect counts.'
                 ])
             shutil.copyfile(temporary_events,events_path)
@@ -400,6 +476,7 @@ def main(argv=None):
         finally:
             db.close()
     print(f"Potential near-miss events: {counts['events']:,}")
+    print(f"Excluded near moored AIS locations: {counts['excluded_near_moored_location']:,}")
     print(f'Events: {events_path.resolve()}')
     print(f'Summary: {summary_path.resolve()}')
     return summary

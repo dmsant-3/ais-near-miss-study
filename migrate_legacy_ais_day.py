@@ -142,6 +142,8 @@ def import_day(legacy_root: Path, compact_root: Path, day: date,
         config = json.loads((compact_root / 'run_config.json').read_text(encoding='utf-8'))
         if config.get('output_format') != 'compact' or config.get('retain_audit_candidates', False) != retain_audit:
             raise ValueError('Import settings must match the compact report configuration')
+        if config.get('dock_exclusion'):
+            raise ValueError('Legacy imports cannot verify the moored-location exclusion; reprocess the original AIS data')
         if not date.fromisoformat(config['start_date']) <= day <= date.fromisoformat(config['end_date']):
             raise ValueError('Legacy date is outside the compact study range')
         db_path = compact_root / 'study.sqlite'

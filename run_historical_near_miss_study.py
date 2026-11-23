@@ -221,6 +221,10 @@ def analyze_port(day: date, port: str, bbox: tuple[float, ...], ais: Path,
                 classifications[label] = classifications.get(label, 0) + 1
     else:
         classifications = {}
+    dock_exclusions = detection_summary.get('counts', {}).get('excluded_near_moored_location', 0)
+    if dock_exclusions:
+        classifications['excluded_near_moored_location'] = dock_exclusions
+    detection_summary.setdefault('quality', {})['excluded_near_moored_location'] = dock_exclusions
     result = {'date': day.isoformat(), 'port': port, 'status': 'complete',
             'potential_events': count,
             'likely_for_human_review': classifications.get('likely_near_miss_for_human_review', 0) + classifications.get('elevated_priority_candidate', 0),
@@ -413,6 +417,8 @@ def run_compact(args) -> int:
         config = {'output_format': 'compact', 'start_date': args.start_date.isoformat(),
                   'end_date': args.end_date.isoformat(), 'study_days': args.study_days,
                   'retain_audit_candidates': args.retain_audit_candidates,
+                  'dock_exclusion': {'source': 'daily AIS moored status', 'distance_m': detector.DOCK_DISTANCE_M,
+                                     'position': 'either vessel at predicted closest approach'},
                   'scoring_version': scoring_version,
                   'ports': {port: list(bounds) for port, bounds in PORTS.items()}}
         if config_path.exists():

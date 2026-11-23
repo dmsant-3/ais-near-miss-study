@@ -66,6 +66,11 @@ class MigrationTests(unittest.TestCase):
             with closing(store.open_writer(compact / 'study.sqlite')) as db:
                 self.assertEqual(store.completed_dates(db), set())
             summary_path.write_text(json.dumps(summary), encoding='utf-8')
+            screened_config = dict(config, dock_exclusion={'distance_m': 185.2})
+            (compact / 'run_config.json').write_text(json.dumps(screened_config), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'cannot verify the moored-location exclusion'):
+                import_day(legacy, compact, day)
+            (compact / 'run_config.json').write_text(json.dumps(config), encoding='utf-8')
             usage = namedtuple('Usage', 'total used free')(100, 99, 1)
             with patch('migrate_legacy_ais_day.shutil.disk_usage', return_value=usage):
                 with self.assertRaisesRegex(OSError, 'migration report reserve'):

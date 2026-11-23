@@ -84,6 +84,52 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(quality['rejected_or_long_gap_segments'],1)
         db.close()
 
+    def test_moored_positions_exclude_predicted_cpa_near_dock(self):
+        for distance, expected_excluded in ((185.1, 1), (185.3, 0)):
+            with self.subTest(distance=distance), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                source = root / 'reports.csv'
+                fields = ['MMSI', 'BaseDateTime', 'LON', 'LAT', 'SOG', 'COG', 'Status']
+                with source.open('w', newline='', encoding='utf-8') as stream:
+                    writer = csv.writer(stream)
+                    writer.writerow(fields)
+                    for dt in (0, 30, 60, 90):
+                        for mmsi, meters, cog in [('111111111', dt * 10, 90),
+                                                  ('222222222', 2000 - dt * 10, 270)]:
+                            writer.writerow([mmsi, ais.utc(1777939200 + dt),
+                                             math.degrees(meters / ais.EARTH_R), 0,
+                                             10 / ais.KNOT, cog, 0])
+                    # The moored report comes last and lacks motion fields.
+                    writer.writerow(['333333333', ais.utc(1777939200),
+                                     math.degrees(1000 / ais.EARTH_R),
+                                     math.degrees(distance / ais.EARTH_R), '', '', '5'])
+                summary = ais.main([str(source), '--output-dir', str(root / 'out')])
+                self.assertEqual(summary['quality']['moored_locations'], 1)
+                self.assertTrue(summary['quality']['moored_status_available'])
+                self.assertEqual(summary['counts']['excluded_near_moored_location'], expected_excluded)
+                self.assertEqual(summary['counts']['events'], 1 - expected_excluded)
+                with (root / 'out' / 'potential_near_miss_events.csv').open(newline='') as stream:
+                    self.assertEqual(len(list(csv.DictReader(stream))), 1 - expected_excluded)
+
+    def test_uses_future_cpa_position_not_current_midpoint(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'reports.csv'
+            with source.open('w', newline='', encoding='utf-8') as stream:
+                writer = csv.writer(stream)
+                writer.writerow(['MMSI', 'BaseDateTime', 'LON', 'LAT', 'SOG', 'COG', 'Status'])
+                for dt in (0, 30, 60, 90):
+                    for mmsi, meters, speed in [('111111111', dt * 20, 20),
+                                                ('222222222', 1000 + dt * 10, 10)]:
+                        writer.writerow([mmsi, ais.utc(1777939200 + dt),
+                                         math.degrees(meters / ais.EARTH_R), 0,
+                                         speed / ais.KNOT, 90, 0])
+                writer.writerow(['333333333', ais.utc(1777939200),
+                                 math.degrees(2000 / ais.EARTH_R), 0, '', '', 5])
+            summary = ais.main([str(source), '--output-dir', str(root / 'out')])
+            self.assertEqual(summary['counts']['events'], 0)
+            self.assertEqual(summary['counts']['excluded_near_moored_location'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()
