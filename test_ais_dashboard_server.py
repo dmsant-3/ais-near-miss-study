@@ -111,6 +111,27 @@ if(found.length !== 1 || !found[0].href.endsWith('/555555555')) throw Error('Lin
 '''
                     subprocess.run([shutil.which('node'), '-e', check_legend], input=shell,
                                    text=True, check=True, capture_output=True)
+                    check_map = r'''
+const fs = require('fs');
+const shell = fs.readFileSync(0, 'utf8');
+const start = shell.indexOf(' const mapZoomScale =');
+const end = shell.indexOf(' for(const [id,pts,involved] of visible){', start);
+if(start < 0 || end < 0) throw Error('Map code missing');
+const document = {querySelector: () => ({value:'1'})};
+const window = {aisPanX:20,aisPanY:-10};
+const tiles = [];
+class Image { constructor(){this.complete=true;this.naturalWidth=256;} set src(value){tiles.push(value);} }
+const c = {drawImage(){}};
+const x=-74, y=40, scale=Math.cos(y*Math.PI/180), radius=0.05;
+function draw(){}
+const result = eval(shell.slice(start,end) + '\n[xy([0,x,y]),xy([0,x+0.01,y+0.01])];');
+if(Math.abs(result[0][0]-520)>0.0001 || Math.abs(result[0][1]-315)>0.0001 ||
+   result[1][0]<=result[0][0] || result[1][1]>=result[0][1]) throw Error('Map and vessel coordinates are misaligned');
+if(!tiles.length || tiles.length > 40 || tiles.some(url => !url.startsWith('https://tile.openstreetmap.org/'))) throw Error('Invalid visible tiles');
+'''
+                    subprocess.run([shutil.which('node'), '-e', check_map], input=shell,
+                                   text=True, check=True, capture_output=True)
+                    self.assertIn('OpenStreetMap contributors', shell)
                 request = Request(base + f'/api/export/candidates?date={day}&port={port}',
                                   headers={'Accept-Encoding': 'gzip'})
                 with urlopen(request, timeout=10) as response:

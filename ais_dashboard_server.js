@@ -87,6 +87,9 @@ controls.setAttribute('aria-label', 'Replay controls');
 sel.before(controls);
 controls.append(sel, slider, button, restart, label, zoomLabel);
 const plot = document.querySelector('canvas');
+const mapCredit = document.createElement('p');
+mapCredit.innerHTML = 'Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a> · Current geography';
+plot.after(mapCredit);
 const legend = document.createElement('section');
 legend.className = 'ship-legend';
 const legendTitle = document.createElement('strong');
@@ -485,6 +488,39 @@ http.createServer(async (req, res) => {
         const zoomable = html.replace('c.clearRect(0,0,1000,650);', '$&' + chartBackdrop)
             .replace('c.fillText(p[3]', 'c.save();c.strokeStyle="#f6fbff";c.lineWidth=4;c.lineJoin="round";c.strokeText(p[3]+ " · "+new Date(p[0]*1000).toISOString().slice(11,19),a+33,b);c.restore();c.fillText(p[3]')
             .replace('c.arc(a,b,4,0,2*Math.PI);c.fill();', 'c.save();c.translate(a,b);const previous=shown.slice(0,-1).findLast(q=>q[1]!==p[1]||q[2]!==p[2]);if(previous&&!p[4]){const [px,py]=xy(previous);c.rotate(Math.atan2(b-py,a-px)+Math.PI/2);}c.moveTo(0,-29);c.quadraticCurveTo(14,-22,15,-8);c.lineTo(13,20);c.quadraticCurveTo(13,25,8,25);c.lineTo(-8,25);c.quadraticCurveTo(-13,25,-13,20);c.lineTo(-15,-8);c.quadraticCurveTo(-14,-22,0,-29);c.closePath();c.fill();c.strokeStyle="#fff";c.lineWidth=3;c.stroke();c.fillStyle="#f8fcff";c.fillRect(-9,-6,18,12);c.fillStyle="#16364d";c.fillRect(-7,-5,14,3);c.fillStyle="#f8fcff";c.fillRect(-6,11,12,8);c.restore();').replace('for(const [i,e] of d.events.entries())', 'd.events = d.events.filter(event => (Number(event.likely_near_miss_score_7) === 7 || Number(event.likely_near_miss_score_8) === 8)); for(const [i,e] of d.events.entries())').replaceAll('Scores 7–8', 'Review scores').replaceAll('score 7–8 encounters', 'review encounters').replace('=>[500+', '=>[500+(window.aisPanX || 0)+').replace(',325-', ',325+(window.aisPanY || 0)-').replaceAll('*280/radius', '*280/radius*(Number(document.querySelector("#site-zoom")?.value)||1)');
+        const geographicMap = `
+ const mapZoomScale = Number(document.querySelector('#site-zoom')?.value) || 1;
+ const pixelsPerDegree = 280 / radius * mapZoomScale;
+ const mapZoom = Math.max(0, Math.min(19, Math.round(Math.log2(scale * pixelsPerDegree * 360 / 256))));
+ const tileCount = 2 ** mapZoom, worldSize = tileCount * 256;
+ const mercatorX = lon => (lon + 180) / 360 * worldSize;
+ const mercatorY = lat => {
+  const angle = Math.max(-85.05112878, Math.min(85.05112878, lat)) * Math.PI / 180;
+  return (1 - Math.asinh(Math.tan(angle)) / Math.PI) / 2 * worldSize;
+ };
+ const mapScale = scale * pixelsPerDegree * 360 / worldSize;
+ const originX = 500 + (window.aisPanX || 0) - mercatorX(x) * mapScale;
+ const originY = 325 + (window.aisPanY || 0) - mercatorY(y) * mapScale;
+ const xy = p => [originX + mercatorX(p[1]) * mapScale, originY + mercatorY(p[2]) * mapScale];
+ const tileSize = 256 * mapScale;
+ window.aisMapTiles ||= new Map();
+ const firstTileX = Math.floor(-originX / tileSize), lastTileX = Math.floor((1000-originX) / tileSize);
+ const firstTileY = Math.max(0, Math.floor(-originY / tileSize));
+ const lastTileY = Math.min(tileCount-1, Math.floor((650-originY) / tileSize));
+ for(let tx=firstTileX; tx<=lastTileX; tx++) for(let ty=firstTileY; ty<=lastTileY; ty++){
+  const tileX = ((tx % tileCount) + tileCount) % tileCount;
+  const url = 'https://tile.openstreetmap.org/' + mapZoom + '/' + tileX + '/' + ty + '.png';
+  let tile = window.aisMapTiles.get(url);
+  if(!tile){
+   tile = new Image();
+   tile.onload = () => draw();
+   tile.src = url;
+   window.aisMapTiles.set(url, tile);
+  }
+  if(tile.complete && tile.naturalWidth) c.drawImage(tile, originX + tx*tileSize, originY + ty*tileSize, tileSize+1, tileSize+1);
+ }
+`;
+        const mapEnabled = zoomable.replace(/ const xy=p=>\[[^\n]+\];/, geographicMap);
         const ruler = `
  const pixelsPerNm = 280 / radius * (Number(document.querySelector("#site-zoom")?.value) || 1) / 60;
  const target = 120 / pixelsPerNm;
@@ -539,7 +575,7 @@ http.createServer(async (req, res) => {
   }
  }
 `;
-        res.end(zoomable.replace(/ const w\s*=/, encounterEffect + '$&').replace('c.fillText(details.textContent,20,25);', '$&' + ruler) + theme + playback);
+        res.end(mapEnabled.replace(/ const w\s*=/, encounterEffect + '$&').replace('c.fillText(details.textContent,20,25);', '$&' + ruler) + theme + playback);
     } catch (error) {
         res.writeHead(error.code === 'ENOENT' ? 404 : 500).end('Could not load the saved AIS dashboard. Check the report directory.');
     }
