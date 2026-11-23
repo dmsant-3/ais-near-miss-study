@@ -97,15 +97,27 @@ plot.after(legend);
 function updateShipLegend(){
  legendItems.replaceChildren();
  const encounter = d.events[sel.value];
- for(const [id, track] of Object.entries(encounter?.tracks || {})){
-  const first = id === encounter.mmsi_a;
-  const second = id === encounter.mmsi_b;
+ if (!encounter?.tracks) {legend.hidden = true; return;}
+ const involved = [String(encounter.mmsi_a || ''), String(encounter.mmsi_b || '')].filter(Boolean);
+ const ids = [...new Set([...involved, ...Object.keys(encounter.tracks)])];
+ for(const id of ids){
+  const track = encounter.tracks[id] || [];
+  const first = id === String(encounter.mmsi_a);
+  const second = id === String(encounter.mmsi_b);
   const item = document.createElement('li');
   const key = document.createElement('span');
   key.className = 'ship-key';
   key.style.backgroundColor = first ? '#007c9e' : second ? '#c04424' : '#666';
   const name = track.find(point => point[3] && point[3] !== id)?.[3] || id;
   item.append(key, name + ' · ' + (first ? 'Vessel A' : second ? 'Vessel B' : 'Nearby anchored vessel'));
+  if ((first || second) && /^[0-9]{9}$/.test(id)) {
+   const link = document.createElement('a');
+   link.href = 'https://www.vesselfinder.com/vessels/details/' + id;
+   link.target = '_blank';
+   link.rel = 'noopener noreferrer';
+   link.textContent = 'VesselFinder · MMSI ' + id;
+   item.append(' · ', link);
+  }
   legendItems.append(item);
  }
  legend.hidden = !legendItems.children.length;

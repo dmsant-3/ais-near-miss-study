@@ -86,6 +86,31 @@ class CompactDashboardTests(unittest.TestCase):
                     self.assertNotIn('All listed encounters scored 7 out of 7', shell)
                     self.assertIn('First flag', shell)
                     self.assertIn('Closest approach', shell)
+                    check_legend = r'''
+const fs = require('fs');
+const shell = fs.readFileSync(0, 'utf8');
+const start = shell.indexOf('function updateShipLegend(){');
+const end = shell.indexOf("\nsel.addEventListener('change', updateShipLegend)", start);
+if (start < 0 || end < 0) throw Error('Legend function missing');
+function element(tag) { return {tag, style:{}, children:[], append(...items){this.children.push(...items)},
+  replaceChildren(){this.children=[]}}; }
+const document = {createElement: element};
+const legend = {hidden:false}, legendItems = element('ul'), sel = {value:'0'};
+const d = {events:[{mmsi_a:'123456789',mmsi_b:'987654321',tracks:{
+  '123456789':[[0,0,0,'First ship']], '987654321':[[0,0,0,'Second ship']],
+  '111111111':[[0,0,0,'Anchored']] }},
+  {mmsi_a:'555555555',mmsi_b:'bad',tracks:{'555555555':[[0,0,0,'New ship']]}}]};
+eval(shell.slice(start, end) + '\nupdateShipLegend();');
+function links() {return legendItems.children.flatMap(item => item.children.filter(x => x && x.tag === 'a'));}
+let found = links();
+if(found.length !== 2 || found[0].href !== 'https://www.vesselfinder.com/vessels/details/123456789' ||
+   found[1].href !== 'https://www.vesselfinder.com/vessels/details/987654321' ||
+   found.some(link => link.rel !== 'noopener noreferrer' || link.target !== '_blank')) throw Error('Incorrect links');
+sel.value = '1'; updateShipLegend(); found = links();
+if(found.length !== 1 || !found[0].href.endsWith('/555555555')) throw Error('Links did not update');
+'''
+                    subprocess.run([shutil.which('node'), '-e', check_legend], input=shell,
+                                   text=True, check=True, capture_output=True)
                 request = Request(base + f'/api/export/candidates?date={day}&port={port}',
                                   headers={'Accept-Encoding': 'gzip'})
                 with urlopen(request, timeout=10) as response:
