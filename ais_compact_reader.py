@@ -50,6 +50,42 @@ def progress(connection: sqlite3.Connection) -> dict:
     return {'ports': ports, 'storage_measurements': measurements, 'projection': projections}
 
 
+def progress_page(connection: sqlite3.Connection, year: int | None = None,
+                  month: int | None = None, page: int = 1) -> dict:
+    """Read at most 30 completed dates and their port rows for the progress page."""
+    if (year is not None and not 1 <= year <= 9999) or (month is not None and not 1 <= month <= 12) or page < 1:
+        raise ValueError('Invalid progress filter')
+    calendar = [row[0] for row in connection.execute(
+        'SELECT DISTINCT substr(ais_date, 1, 7) FROM study_day ORDER BY 1 DESC')]
+    clauses, values = [], []
+    if year is not None:
+        clauses.append('substr(ais_date, 1, 4) = ?')
+        values.append(f'{year:04d}')
+    if month is not None:
+        clauses.append('substr(ais_date, 6, 2) = ?')
+        values.append(f'{month:02d}')
+    condition = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
+    total = connection.execute('SELECT count(*) FROM study_day' + condition, values).fetchone()[0]
+    pages = max(1, (total + 29) // 30)
+    page = min(page, pages)
+    rows = connection.execute(
+        'WITH selected AS (SELECT ais_date FROM study_day' + condition +
+        ' ORDER BY ais_date DESC LIMIT 30 OFFSET ?) '
+        'SELECT p.ais_date, p.port, p.potential_events, p.likely_for_human_review, p.exclusion_total '
+        'FROM port_day p JOIN selected s ON s.ais_date = p.ais_date ORDER BY p.ais_date DESC, p.port',
+        [*values, (page - 1) * 30])
+    measurement = connection.execute(
+        'SELECT count(*), max(retained_after), '
+        'avg(max(0, retained_after - retained_before)), '
+        'max(max(0, retained_after - retained_before)) FROM storage_measurement').fetchone()
+    projection = None if not measurement[0] else {
+        'measured_dates': measurement[0], 'retained_bytes': measurement[1],
+        'average_date_growth_bytes': round(measurement[2]), 'largest_date_growth_bytes': measurement[3]}
+    return {'ports': [dict(row) for row in rows], 'calendar': calendar,
+            'completed_days': connection.execute('SELECT count(*) FROM study_day').fetchone()[0],
+            'filtered_days': total, 'page': page, 'pages': pages, 'projection': projection}
+
+
 def provenance(connection: sqlite3.Connection, day: date, port: str) -> dict:
     day_text = day.isoformat()
     row = connection.execute(
@@ -359,17 +395,20 @@ def export_csv(connection: sqlite3.Connection, kind: str, day: date, port: str |
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('database', type=Path)
-    parser.add_argument('action', choices=['progress', 'encounters', 'replay', 'shell', 'export',
+    parser.add_argument('action', choices=['progress', 'progress-page', 'encounters', 'replay', 'shell', 'export',
                                            'provenance'])
     parser.add_argument('--date', type=date.fromisoformat)
     parser.add_argument('--port')
     parser.add_argument('--limit', type=int, default=50)
     parser.add_argument('--cursor')
+    parser.add_argument('--year', type=int)
+    parser.add_argument('--month', type=int)
+    parser.add_argument('--page', type=int, default=1)
     parser.add_argument('--encounter')
     parser.add_argument('--kind', choices=['daily', 'candidates', 'likely', 'trajectories',
                                            'traffic', 'environment'])
     args = parser.parse_args()
-    if args.action not in ('progress', 'shell', 'export') and (not args.date or not args.port):
+    if args.action not in ('progress', 'progress-page', 'shell', 'export') and (not args.date or not args.port):
         parser.error('date and port are required')
     if args.action == 'export' and (not args.date or not args.kind):
         parser.error('date and kind are required')
@@ -382,6 +421,8 @@ def main() -> None:
     try:
         if args.action == 'progress':
             result = progress(connection)
+        elif args.action == 'progress-page':
+            result = progress_page(connection, args.year, args.month, args.page)
         elif args.action == 'encounters':
             result = encounters(connection, args.date, args.port, args.limit, args.cursor)
         elif args.action == 'provenance':

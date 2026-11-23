@@ -5,6 +5,7 @@ import gzip
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -95,6 +96,44 @@ class CompactDashboardTests(unittest.TestCase):
                 with urlopen(request, timeout=10) as response:
                     self.assertIsNone(response.headers.get('Content-Encoding'))
                     self.assertIn('111', response.read().decode('utf-8'))
+                with closing(store.open_writer(root / 'study.sqlite')) as db:
+                    page_ports = (port, 'Port_of_LA', 'Port_of_Houston')
+                    page_results = [{'port': name, 'potential_events': 0,
+                                     'likely_for_human_review': 0, 'elevated_priority_candidates': 0,
+                                     'lower_priority_candidates': 0, 'detector_quality': {}}
+                                    for name in page_ports]
+                    bounds = {name: [0, 0, 1, 1] for name in page_ports}
+                    for day_number in range(1, 32):
+                        extra_day = date(2021, 10, day_number)
+                        store.publish_day(db, extra_day, {str(extra_day): sources[str(day)]},
+                                          page_results, bounds, 'score-8')
+                    store.publish_day(db, date(2022, 1, 1), {'2022-01-01': sources[str(day)]},
+                                      [{'port': port, 'potential_events': 0,
+                                        'likely_for_human_review': 0, 'elevated_priority_candidates': 0,
+                                        'lower_priority_candidates': 0, 'detector_quality': {}}],
+                                      {port: [0, 0, 1, 1]}, 'score-8')
+                with urlopen(base + '/progress.html', timeout=10) as response:
+                    listing = response.read().decode('utf-8')
+                listed = re.findall(r'href="/(\d{4}-\d{2}-\d{2})/Port_of_NY_NJ"', listing)
+                self.assertEqual(len(listed), 30)
+                self.assertEqual(listed[0], '2022-01-01')
+                self.assertIn('/2021-10-31/Port_of_LA', listing)
+                self.assertIn('/2021-10-31/Port_of_Houston', listing)
+                self.assertIn('name="year"', listing)
+                self.assertIn('name="month"', listing)
+                self.assertIn('rel="next"', listing)
+                with urlopen(base + '/progress.html?year=2021&month=10&page=2', timeout=10) as response:
+                    listing = response.read().decode('utf-8')
+                self.assertEqual(re.findall(r'href="/(\d{4}-\d{2}-\d{2})/Port_of_NY_NJ"', listing),
+                                 ['2021-10-01'])
+                self.assertIn('Page 2 of 2 · 31 matching dates', listing)
+                self.assertIn('year=2021&amp;month=10&amp;page=1', listing)
+                with urlopen(base + '/progress.html?year=2020&month=02', timeout=10) as response:
+                    self.assertIn('No completed dates match', response.read().decode('utf-8'))
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(base + '/progress.html?month=13', timeout=10)
+                self.assertEqual(error.exception.code, 400)
+                error.exception.close()
             finally:
                 process.terminate()
                 process.wait(timeout=10)

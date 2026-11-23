@@ -205,7 +205,23 @@ http.createServer(async (req, res) => {
     try {
         const compact = await isCompact();
         if (compact && (route === '/' || route === '/progress.html' || route === '/api/progress')) {
-            const data = JSON.parse(await compactReader('progress'));
+            const query = new URL(req.url, 'http://localhost').searchParams;
+            const year = query.get('year') || '';
+            const month = query.get('month') || '';
+            const page = query.get('page') || '1';
+            if (route !== '/api/progress' &&
+                ((year && (!/^\d{4}$/.test(year) || Number(year) < 1)) ||
+                 (month && (!/^\d{2}$/.test(month) || Number(month) < 1 || Number(month) > 12)) ||
+                 !/^[1-9]\d{0,6}$/.test(page))) {
+                res.writeHead(400).end('Invalid progress filters');
+                return;
+            }
+            const pageArgs = [];
+            if (year) pageArgs.push('--year', year);
+            if (month) pageArgs.push('--month', month);
+            pageArgs.push('--page', page);
+            const data = JSON.parse(await compactReader(route === '/api/progress' ? 'progress' : 'progress-page',
+                route === '/api/progress' ? [] : pageArgs));
             data.config = JSON.parse(await fs.readFile(path.join(reportRoot, 'run_config.json'), 'utf8'));
             try {
                 data.status = JSON.parse(await fs.readFile(path.join(reportRoot, 'run_status.json'), 'utf8'));
@@ -213,8 +229,8 @@ http.createServer(async (req, res) => {
                 if (error.code !== 'ENOENT') throw error;
                 data.status = null;
             }
-            data.completed_days = new Set(data.ports.map(row => row.ais_date)).size;
             if (route === '/api/progress') {
+                data.completed_days = new Set(data.ports.map(row => row.ais_date)).size;
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
                 res.end(JSON.stringify(data));
             } else {
@@ -232,6 +248,36 @@ http.createServer(async (req, res) => {
                     row.ais_date + '/ports/' + row.port + '/provenance">provenance</a></li>');
                 const escapeHtml = value => String(value).replace(/[&<>"']/g, char =>
                     ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
+                const years = [...new Set(data.calendar.map(item => item.slice(0, 4)))];
+                if (year && !years.includes(year)) years.push(year);
+                years.sort().reverse();
+                const yearOptions = years.map(value => '<option value="' + value + '"' +
+                    (value === year ? ' selected' : '') + '>' + value + '</option>').join('');
+                const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                    'July', 'August', 'September', 'October', 'November', 'December'];
+                const monthOptions = monthNames.map((name, index) => {
+                    const value = String(index + 1).padStart(2, '0');
+                    return '<option value="' + value + '"' + (value === month ? ' selected' : '') +
+                        '>' + name + '</option>';
+                }).join('');
+                const filters = '<form action="/progress.html" method="get" class="replay-controls">' +
+                    '<label>Year <select name="year" onchange="this.form.requestSubmit()">' +
+                    '<option value="">All years</option>' + yearOptions + '</select></label>' +
+                    '<label>Month <select name="month" onchange="this.form.requestSubmit()">' +
+                    '<option value="">All months</option>' + monthOptions + '</select></label>' +
+                    '<button type="submit">Show dates</button></form>';
+                const pageLink = number => {
+                    const params = new URLSearchParams();
+                    if (year) params.set('year', year);
+                    if (month) params.set('month', month);
+                    params.set('page', number);
+                    return '/progress.html?' + params.toString().replaceAll('&', '&amp;');
+                };
+                const pagination = '<nav aria-label="Date pages">' +
+                    (data.page > 1 ? '<a rel="prev" href="' + pageLink(data.page - 1) + '">Previous</a> · ' : '') +
+                    'Page ' + data.page + ' of ' + data.pages + ' · ' + data.filtered_days + ' matching dates' +
+                    (data.page < data.pages ? ' · <a rel="next" href="' + pageLink(data.page + 1) + '">Next</a>' : '') +
+                    '</nav>';
                 const status = data.status ? '<p>Latest run: ' + escapeHtml(data.status.state) +
                     (data.status.message ? ' — ' + escapeHtml(data.status.message) : '') + '</p>' : '';
                 const active = data.status?.active_date ? '<p>Processing ' +
@@ -255,7 +301,9 @@ http.createServer(async (req, res) => {
                 res.end('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>AIS progress</title><h1>AIS progress</h1><p>' +
                     data.completed_days + ' completed AIS dates' + (data.config.study_days == null ? '' :
                     ' of ' + Number(data.config.study_days)) +
-                    '</p>' + status + active + missing + metrics + '<ul>' + links.join('') + '</ul>' + history + theme);
+                    '</p>' + status + active + missing + metrics + filters + pagination +
+                    (links.length ? '<ul>' + links.join('') + '</ul>' : '<p>No completed dates match these filters.</p>') +
+                    pagination + history + theme);
             }
             return;
         }
